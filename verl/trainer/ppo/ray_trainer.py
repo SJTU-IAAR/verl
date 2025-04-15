@@ -167,10 +167,23 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
 
 
 def compute_response_mask(data: DataProto):
+    """计算响应掩码，支持通过info_mask进行状态掩码处理"""
     responses = data.batch['responses']
     response_length = responses.size(1)
     attention_mask = data.batch['attention_mask']
-    return attention_mask[:, -response_length:]
+    response_mask = attention_mask[:, -response_length:]
+    
+    # 检查是否存在info_mask并且是否启用了state_masking
+    if 'info_mask' in data.batch:
+        # 使用info_mask作为response_mask
+        loss_mask = data.batch['info_mask'][:, -response_length:]
+        # 调试信息
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+            coverage = (loss_mask.float().sum() / response_mask.float().sum()).item()
+            print(f"[INFO] Using info_mask: trainable_tokens={loss_mask.sum().item()}, coverage={coverage:.4f}")
+        return loss_mask
+    
+    return response_mask
 
 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
