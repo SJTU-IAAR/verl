@@ -45,6 +45,7 @@ if package_version <= '0.6.3':
     vllm_mode = 'customized'
     from .vllm_rollout import vLLMRollout
     from .fire_vllm_rollout import FIREvLLMRollout
+    from .tool_vllm_rollout import ToolEnabledVLLMRollout
 else:
     vllm_mode = 'spmd'
     from .vllm_rollout_spmd import vLLMRollout

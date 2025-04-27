@@ -33,66 +33,19 @@ from verl.workers.rollout.vllm_rollout.vllm_rollout import vLLMRollout, _pre_pro
 from verl.third_party.vllm import LLM, vllm_version
 from verl.third_party.vllm import parallel_state as vllm_ps
 from vllm import SamplingParams
-import time
 
-def search_documents(queries:list, top_n: int = 5, threshold: float = 0.8,type = "wiki"):
-
-    if type == "wiki":
-        url = "http://192.168.239.37:30080/batch_search"
-    elif type == "book":
-        url = "http://192.168.239.37:30010/batch_search"
-    payload = {
-        "query": queries,
-        "top_n": top_n,
-        "return_score": True
-    }
-
-
-    try:
-        # 发送 POST 请求
-        response = requests.post(url, json=payload,timeout=3)
-        response.raise_for_status()  # 检查请求是否成功
-
-        # 获取结果
-        results = response.json()
-
-        # 筛除低于阈值的结果
-        documents, scores = results
-        filtered_documents = []
-        for idx,answer_list in enumerate(documents):
-            score = scores[idx]
-            filtered_answer_list = []
-            for i,answer in enumerate(answer_list):
-                if score[i] >= threshold:
-                    filtered_answer_list.append(answer)
-            answer_list = filtered_answer_list
-            filtered_documents.append(answer_list)
-        return filtered_documents
-
-    except requests.exceptions.RequestException as e:
-        print(f"请求失败: {e}")
-        return None
 
 class HTTPSearchClient:
     """HTTP client for remote search API calls"""
     
-    def __init__(self, search_url, topk=3, failure_rate=0.0):
+    def __init__(self, search_url, topk=3):
         self.search_url = search_url
         self.topk = topk
-        self.failure_rate = failure_rate  # Probability of simulated failure (0.0 to 1.0)
-    
         
     def batch_search(self, queries: List[str]):
         """Call remote search API and return search results"""
         if not queries:
             return []
-            
-        # Simulate API failure based on failure_rate
-        import random
-        if random.random() < self.failure_rate:
-            print(f"Simulated search API failure (rate: {self.failure_rate})")
-            # 返回一个包含错误信息的列表
-            return [{"document": {"contents": "Search API failed due to an error."}}] * len(queries)
             
         payload = {
             "queries": queries,
@@ -105,8 +58,8 @@ class HTTPSearchClient:
             return response["result"]
         except Exception as e:
             print(f"Search API error: {e}")
-            # 返回一个包含错误信息的列表作为后备
-            return [{"document": {"contents": "Search API failed due to an error."}}] * len(queries)
+            # 返回空结果作为后备
+            return [[] for _ in range(len(queries))]
         
     def format_search_results(self, results):
         """Format search results as readable text"""
@@ -137,20 +90,6 @@ class SearchEnabledVLLMRollout(vLLMRollout):
             model_hf_config: the huggingface config to initiallize the generating model in vllm
             **kwargs: train_tp, for Megatron Backend to initialize hybrid engine
         """
-        # 保存tokenizer和相关token ID之前初始化flash_rag配置
-        self.flash_rag = config.get('flash_rag', False)  # 默认设置为 False，确保不使用 Flash RAG
-        self.search_documents = config.get('search_documents', False)
-        
-        # 确保搜索相关配置被保留
-        self.enable_search = config.get('enable_search', False)
-        self.search_url = config.get('search_url', 'http://localhost:8000/retrieve')
-        self.search_topk = config.get('search_topk', 3)
-        
-        # 初始化flash_rag的特殊URL
-        if self.flash_rag:
-            self.search_url = config.get('search_url', 'http://192.168.175.87:8014/batch_search')
-            print(f"Using Flash RAG search mode with URL: {self.search_url}")
-        
         # 先初始化父类
         super().__init__(actor_module, config, tokenizer, model_hf_config, **kwargs)
         
@@ -159,6 +98,10 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
         print(f"[DEBUG] Using pad_token_id: {self.pad_token_id}")
         
+        # 确保搜索相关配置被保留
+        self.enable_search = config.get('enable_search', False)
+        self.search_url = config.get('search_url', 'http://localhost:8000/retrieve')
+        self.search_topk = config.get('search_topk', 3)
         self.max_turns = config.get('max_turns', 5)
         self.search_stop = config.get('search_stop', "</search>")
         
@@ -172,13 +115,11 @@ class SearchEnabledVLLMRollout(vLLMRollout):
             self.start_state_marker = "<information>"
             self.end_state_marker = "</information>"
         
-        # 只在非flash_rag模式下初始化搜索客户端
-        if not self.flash_rag:
-            self.search_client = HTTPSearchClient(
-                search_url=self.search_url,
-                topk=self.search_topk,
-                failure_rate=0.3  # 设置失败率为 30%
-            )
+        # 初始化搜索客户端
+        self.search_client = HTTPSearchClient(
+            search_url=self.search_url,
+            topk=self.search_topk
+        )
         
         # 设置搜索相关配置
         self.search_pattern = r'<search>(.*?)</search>'  # 检测搜索查询的正则表达式模式
@@ -190,6 +131,7 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         except:
             self.model_device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         
+        # 设置停止条件
         self.sampling_params.stop = [self.search_stop]
         self.sampling_params.ignore_eos = False
         if hasattr(self.sampling_params, 'detokenize'):
@@ -211,44 +153,6 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         for key, value in old_sampling_params_args.items():
             setattr(self.sampling_params, key, value)
 
-    def _flash_rag_batch_search(self, queries):
-        """使用flash_rag模式实现的批量搜索"""
-        print(f"========== Batch search with {len(queries)} queries ==========")
-        if not queries:
-            return []
-        
-        try:
-            # 使用batch_search端点处理批量查询
-            if len(queries) > 1:
-                url = self.search_url.replace('/search', '/batch_search')
-                data = {'query': queries, 'top_n': self.search_topk}
-                response = requests.post(url, json=data, timeout=10)
-                
-                result_list = []
-                # 处理二维数组格式的返回结果
-                for item_group in response.json():
-                    curr_result = ''
-                    for item in item_group:
-                        curr_result += f"{item['contents']}\n\n"
-                    result_list.append(curr_result.strip())
-                
-                return result_list
-            # 使用单个查询
-            else:
-                url = self.search_url
-                data = {'query': queries[0], 'top_n': self.search_topk}
-                response = requests.post(url, json=data, timeout=10)
-                
-                curr_result = ''
-                for item in response.json():
-                    curr_result += f"{item['contents']}\n\n"
-                
-                return [curr_result.strip()]
-        except Exception as e:
-            print(f"Flash RAG Search API error: {e}")
-            # 返回空结果作为后备
-            return ["No search results found due to an error."] * len(queries)
-
     def _process_search_in_batch(self, responses):
         """
         处理批次响应，识别搜索查询并执行搜索
@@ -261,8 +165,7 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         """
         batch_size = responses.size(0)
         
-        # 解码响应文本，确保 responses 是整数类型
-        responses = responses.to(dtype=torch.long)  # 转换为整数类型
+        # 解码响应文本
         response_texts = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
         
         # 处理每个响应查找搜索查询或答案
@@ -293,13 +196,8 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         search_results = {}  # 确保这是一个dict[int, str]
         if search_queries:
             try:
-                if self.search_documents:
-                    print(f"========== Search documents with {len(search_queries)} queries ==========")
-                    formatted_results = search_documents(search_queries)
-                else:
-                    # 始终使用 HTTPSearchClient 的 batch_search 方法，不使用 flash_rag_batch_search
-                    results = self.search_client.batch_search(search_queries)
-                    formatted_results = self.search_client.format_search_results(results)
+                results = self.search_client.batch_search(search_queries)
+                formatted_results = self.search_client.format_search_results(results)
                 
                 # 将结果映射回原始批次索引
                 for batch_idx, result_idx in search_results_mapping.items():
@@ -342,9 +240,7 @@ class SearchEnabledVLLMRollout(vLLMRollout):
             key_types = [type(k) for k in search_results.keys()]
             print(f"[DEBUG] search_results keys types: {key_types[:5]}")
         
-        # 解码输入和响应文本，确保转换为整数类型
-        responses = responses.to(dtype=torch.long)
-        original_inputs = original_inputs.to(dtype=torch.long)
+        # 解码输入和响应文本
         response_text_list = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
         tmp_input_text_list = self.tokenizer.batch_decode(original_inputs, skip_special_tokens=False)
         
@@ -382,7 +278,8 @@ class SearchEnabledVLLMRollout(vLLMRollout):
             padded_inputs = torch.cat([pad_tokens, padded_inputs], dim=-1)
         elif padded_inputs.shape[1] > max_prompt_length:
             # 如果长度超过最大值，截断左侧（保留右侧的重要内容）
-            print(f"[INFO] Input length exceeds max_prompt_length: {padded_inputs.shape[1]} > {max_prompt_length} (not truncating in intermediate turns)")
+            print(f"[WARNING] Truncating inputs from {padded_inputs.shape[1]} to {max_prompt_length}")
+            padded_inputs = padded_inputs[:, -max_prompt_length:]
         
         return padded_inputs
     
@@ -588,7 +485,7 @@ class SearchEnabledVLLMRollout(vLLMRollout):
                         final_answers[active_idx] = answer
                     
                     # 当前round不需要进入下一个round，直接拼接答案
-                    current_response_str = self.tokenizer.decode(responses[i].to(dtype=torch.long)).replace(pad_token, '')
+                    current_response_str = self.tokenizer.decode(responses[i]).replace(pad_token, '')
                     final_responses[active_idx] += current_response_str.strip()
                 else:
                     # 样本需要继续生成
@@ -597,7 +494,7 @@ class SearchEnabledVLLMRollout(vLLMRollout):
                         search_result = search_results[i]
                         
                         # 将search result拼接得到当前round的答案
-                        current_response_str = self.tokenizer.decode(responses[i].to(dtype=torch.long)).replace(pad_token, '')
+                        current_response_str = self.tokenizer.decode(responses[i]).replace(pad_token, '')
                         final_responses[active_idx] += f"{current_response_str.strip()}\n\n<information>{search_result}</information>\n\n"
             
             # 检查是否还有活跃样本，如果没有则不再准备下一轮输入
@@ -627,29 +524,14 @@ class SearchEnabledVLLMRollout(vLLMRollout):
                         active_search_results
                     )
                     
-                    # 更新输入，动态调整 fixed_size_input_ids 的形状以适应 next_inputs
-                    max_new_length = max(next_inputs.shape[1], fixed_size_input_ids.shape[1])
-                    if max_new_length > fixed_size_input_ids.shape[1]:
-                        # 如果新输入的长度大于当前固定长度，扩展 fixed_size_input_ids
-                        pad_length = max_new_length - fixed_size_input_ids.shape[1]
-                        pad_tokens = torch.full((expected_batch_size, pad_length), self.pad_token_id, dtype=torch.long, device=device)
-                        fixed_size_input_ids = torch.cat([fixed_size_input_ids, pad_tokens], dim=1)
-                        attention_mask = torch.cat([attention_mask, torch.zeros((expected_batch_size, pad_length), dtype=torch.int, device=device)], dim=1)
-                        position_ids = torch.arange(max_new_length, device=device).expand(expected_batch_size, -1)
-                    
+                    # 更新输入
                     fixed_size_input_ids_clone = fixed_size_input_ids.clone()
                     for i, idx in enumerate(torch.where(active_mask)[0]):
                         if i < next_inputs.shape[0]:
-                            # 确保 next_inputs[i] 的长度与 fixed_size_input_ids_clone[idx] 的长度一致
-                            if next_inputs[i].shape[0] < fixed_size_input_ids_clone[idx].shape[0]:
-                                pad_length = fixed_size_input_ids_clone[idx].shape[0] - next_inputs[i].shape[0]
-                                pad_tokens = torch.full((pad_length,), self.pad_token_id, dtype=torch.long, device=device)
-                                next_inputs_i_padded = torch.cat([pad_tokens, next_inputs[i]], dim=0)
-                                fixed_size_input_ids_clone[idx] = next_inputs_i_padded
-                            else:
-                                fixed_size_input_ids_clone[idx] = next_inputs[i][-fixed_size_input_ids_clone[idx].shape[0]:]
+                            fixed_size_input_ids_clone[idx] = next_inputs[i]
                     
                     fixed_size_input_ids = fixed_size_input_ids_clone
+                    
                 except Exception as e:
                     print(f"Error preparing next turn inputs: {e}")
                     print("Keeping original inputs due to error")
@@ -663,18 +545,15 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         # 对齐响应长度
         combined_responses = rnn_utils.pad_sequence(final_responses_token_tensor, batch_first=True, padding_value=self.pad_token_id)
         
-        # 最终输出阶段的截断策略
+        # 确保不超过最大响应长度
         if combined_responses.shape[1] < max_response_length:
-            # 如果长度小于要求，填充到固定长度
             pad_length = max_response_length - combined_responses.shape[1]
             n_rows = combined_responses.shape[0]
             pad_tokens = torch.full((n_rows, pad_length), self.pad_token_id, dtype=torch.long, device=device)
             combined_responses = torch.cat([combined_responses, pad_tokens], dim=1)
         elif combined_responses.size(1) > max_response_length:
-            # 只在最终阶段进行截断，保留右侧最新内容
-            print(f"[FINAL STAGE] Truncating combined responses from {combined_responses.size(1)} to {max_response_length}")
-            # 默认从右侧保留，截断左侧
-            combined_responses = combined_responses[:, -max_response_length:]
+            print(f"Truncating combined responses from {combined_responses.size(1)} to {max_response_length}")
+            combined_responses = combined_responses[:, :max_response_length]
         
         # 创建信息掩码
         try:
@@ -694,7 +573,8 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         attention_mask = 1 - attention_mask
         
         # 处理info_mask
-        # 注意: info_mask中True表示信息区域（不参与训练）
+        # 注意: info_mask中True表示信息区域（不参与训练），与最终要求相反
+        # 最终的info_mask: True代表可训练的token，False代表信息区（不训练）
         info_mask = ((~info_mask) & attention_mask[:, -info_mask.shape[1]:]).bool()
         
         # 构建最终输出
@@ -816,7 +696,6 @@ class SearchEnabledVLLMRollout(vLLMRollout):
         Returns:
             DataProto: 生成结果
         """
-        breakpoint()
         # 记录输入信息
         input_batch_size = prompts.batch.batch_size[0] if prompts.batch is not None else None
         input_keys = list(prompts.batch.keys()) if prompts.batch is not None else []

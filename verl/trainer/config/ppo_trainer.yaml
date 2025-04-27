@@ -92,6 +92,16 @@ actor_rollout_ref:
     state_masking: True  # 是否启用状态掩码
     start_state_marker: "<information>"  # 开始标记
     end_state_marker: "</information>"  # 结束标记
+    # 工具执行相关配置
+    tool_config:
+      enabled: False  # 是否启用工具功能
+      server_url: "http://127.0.0.1:30003"  # 工具服务器URL
+      max_tool_turns: 3  # 最大工具调用轮数
+      max_retries: 3  # 工具执行失败时最大重试次数
+      retry_delay: 1.0  # 重试间隔时间(秒)
+      timeout: 30.0  # 工具执行超时时间(秒)
+      max_workers: 10  # 并行执行的最大工具数
+      request_interval: 0.1  # 请求间隔时间(秒)
     # for vllm rollout
     dtype: bfloat16 # should align with FSDP
     gpu_memory_utilization: 0.5

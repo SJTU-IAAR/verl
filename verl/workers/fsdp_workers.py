@@ -314,6 +314,11 @@ class ActorRolloutRefWorker(Worker):
         search_topk = rollout_config.get('search_topk', 3)
         max_turns = rollout_config.get('max_turns', 5)
         ignore_eos = rollout_config.get('ignore_eos', False)
+
+        # 检查是否启用工具执行
+        use_tools = rollout_config.get('tool_config', {}).get('enabled', False)
+        print(f"[DEBUG] fsdp_workers - use_tools value: {use_tools}")
+        print(f"[DEBUG] fsdp_workers - tool_config: {rollout_config.get('tool_config', {})}")
         
         # 从配置中删除搜索相关参数，以避免传递给原始vLLMRollout
         with open_dict(rollout_config):
@@ -327,6 +332,11 @@ class ActorRolloutRefWorker(Worker):
                 del rollout_config.max_turns
             if 'ignore_eos' in rollout_config:
                 del rollout_config.ignore_eos
+            
+            # 确保tool_config.enabled配置正确
+            if 'tool_config' in rollout_config and use_tools:
+                print(f"[DEBUG] fsdp_workers - Ensuring tool_config.enabled=True")
+                rollout_config.tool_config.enabled = True
         
         # 确保其他必要的参数存在
         if 'name' not in rollout_config:
@@ -351,7 +361,7 @@ class ActorRolloutRefWorker(Worker):
             
             local_path = copy_to_local(self.config.model.path)
             
-            # 根据是否启用搜索选择正确的rollout类
+            # 根据是否启用搜索或工具选择正确的rollout类
             if use_search and search_url:
                 try:
                     # 根据vllm_mode选择正确的搜索增强rollout类
@@ -399,6 +409,63 @@ class ActorRolloutRefWorker(Worker):
                 
                 except ImportError as e:
                     print(f"WARNING: Failed to import SearchEnabledVLLMRollout for mode {vllm_mode}: {e}")
+                    print("Falling back to standard vLLMRollout")
+                    
+                    # 回退到标准vLLM rollout
+                    if vllm_mode == 'customized':
+                        rollout = vLLMRollout(
+                            actor_module=self.actor_module_fsdp,
+                            config=rollout_config,
+                            tokenizer=self.tokenizer,
+                            model_hf_config=self.actor_model_config,
+                            **rollout_kwargs
+                        )
+                    elif vllm_mode == 'spmd':
+                        rollout = vLLMRollout(
+                            model_path=local_path,
+                            config=rollout_config,
+                            tokenizer=self.tokenizer,
+                            model_hf_config=self.actor_model_config,
+                            device_mesh=rollout_device_mesh,
+                            **rollout_kwargs
+                        )
+                    else:
+                        raise NotImplementedError(f"Unsupported vllm_mode: {vllm_mode}")
+            
+            elif use_tools:
+                try:
+                    # 使用工具增强的rollout
+                    from verl.workers.rollout.vllm_rollout import ToolEnabledVLLMRollout
+                    
+                    print(f"Initializing ToolEnabledVLLMRollout with tool_server_url={rollout_config.tool_config.server_url}")
+                    
+                    if vllm_mode == 'customized':
+                        if hasattr(self, 'train_tp'):
+                            rollout_kwargs['train_tp'] = self.train_tp
+                        
+                        rollout = ToolEnabledVLLMRollout(
+                            actor_module=self.actor_module_fsdp,
+                            config=rollout_config,
+                            tokenizer=self.tokenizer,
+                            model_hf_config=self.actor_model_config,
+                            **rollout_kwargs
+                        )
+                    elif vllm_mode == 'spmd':
+                        # 暂时不支持SPMD模式下的工具执行
+                        print("WARNING: ToolEnabledVLLMRollout is not supported in SPMD mode, falling back to standard vLLMRollout")
+                        rollout = vLLMRollout(
+                            model_path=local_path,
+                            config=rollout_config,
+                            tokenizer=self.tokenizer,
+                            model_hf_config=self.actor_model_config,
+                            device_mesh=rollout_device_mesh,
+                            **rollout_kwargs
+                        )
+                    else:
+                        raise NotImplementedError(f"Unsupported vllm_mode: {vllm_mode}")
+                
+                except ImportError as e:
+                    print(f"WARNING: Failed to import ToolEnabledVLLMRollout: {e}")
                     print("Falling back to standard vLLMRollout")
                     
                     # 回退到标准vLLM rollout
