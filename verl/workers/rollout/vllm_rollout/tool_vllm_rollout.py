@@ -748,7 +748,7 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             'input_ids': torch.cat([original_inputs.long(), combined_responses], dim=1),
             'attention_mask': attention_mask,
             'position_ids': position_ids.long(),
-            'output_mask': output_mask
+            'info_mask': output_mask
         }
         
         # Handle non-tensor data

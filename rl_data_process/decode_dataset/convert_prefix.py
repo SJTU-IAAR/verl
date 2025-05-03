@@ -13,6 +13,7 @@ You can execute Python code by writing it inside <tool> tags:
 
 <tool>
 import math
+from tool import search_r1
 radius = 5
 area = math.pi * radius ** 2
 print(f"The area of a circle with radius {radius} is {area:.2f}")
