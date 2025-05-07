@@ -94,26 +94,26 @@ actor_rollout_ref:
     use_fire_sampling: False # https://arxiv.org/abs/2410.21236
     prompt_length: ${data.max_prompt_length}  # not use for opensource
     response_length: ${data.max_response_length}
-    # 搜索增强生成相关配置
-    enable_search: False  # 是否启用搜索
-    search_url: "http://search-server:8000/retrieve"  # 搜索服务URL
-    search_topk: 3  # 每次搜索返回的最大结果数
-    max_turns: 5  # 最大交互轮数
-    search_stop: "</search>"  # 搜索停止标记
-    # 状态掩码配置
-    state_masking: True  # 是否启用状态掩码
-    start_state_marker: "<information>"  # 开始标记
-    end_state_marker: "</information>"  # 结束标记
-    # 工具执行相关配置
+    # Search-enhanced generation configuration
+    enable_search: False  # Whether to enable search
+    search_url: "http://search-server:8000/retrieve"  # Search service URL
+    search_topk: 3  # Maximum number of search results to return
+    max_turns: 5  # Maximum number of interaction turns
+    search_stop: "</search>"  # Search stop token
+    # State masking configuration
+    state_masking: True  # Whether to enable state masking
+    start_state_marker: "<information>"  # Start marker
+    end_state_marker: "</information>"  # End marker
+    # Tool execution configuration
     tool_config:
-      enabled: False  # 是否启用工具功能
-      server_url: "http://127.0.0.1:30003"  # 工具服务器URL
-      max_tool_turns: 3  # 最大工具调用轮数
-      max_retries: 3  # 工具执行失败时最大重试次数
-      retry_delay: 1.0  # 重试间隔时间(秒)
-      timeout: 30.0  # 工具执行超时时间(秒)
-      max_workers: 10  # 并行执行的最大工具数
-      request_interval: 0.1  # 请求间隔时间(秒)
+      enabled: False  # Whether to enable tool functionality 
+      server_url: "http://127.0.0.1:30003"  # Tool server URL
+      max_tool_turns: 3  # Maximum number of tool calls
+      max_retries: 3  # Maximum number of retries on tool execution failure
+      retry_delay: 1.0  # Retry delay in seconds
+      timeout: 30.0  # Tool execution timeout in seconds
+      max_workers: 10  # Maximum number of parallel tools
+      request_interval: 0.1  # Request interval in seconds
     # for vllm rollout
     dtype: bfloat16 # should align with FSDP
     gpu_memory_utilization: 0.5

@@ -176,10 +176,23 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
 
 
 def compute_response_mask(data: DataProto):
+    """Compute response mask, supporting state masking through info_mask"""
     responses = data.batch["responses"]
     response_length = responses.size(1)
     attention_mask = data.batch["attention_mask"]
-    return attention_mask[:, -response_length:]
+    response_mask = attention_mask[:, -response_length:]
+    
+    # Check if info_mask exists and state masking is enabled
+    if 'info_mask' in data.batch:
+        # Use info_mask as response_mask
+        loss_mask = data.batch['info_mask'][:, -response_length:]
+        # Debug information
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+            coverage = (loss_mask.float().sum() / response_mask.float().sum()).item()
+            print(f"[INFO] Using info_mask: trainable_tokens={loss_mask.sum().item()}, coverage={coverage:.4f}")
+        return loss_mask
+    
+    return response_mask
 
 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True):
@@ -344,7 +357,6 @@ class RayPPOTrainer:
                 "actor_rollout_ref.ref": "log_prob_micro_batch_size",
                 "actor_rollout_ref.rollout": "log_prob_micro_batch_size",
             }
-            print(f'test_gen_batch meta info: {test_gen_batch.meta_info}')
 
             if name in settings:
                 param = settings[name]
@@ -617,11 +629,6 @@ class RayPPOTrainer:
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
-            # Store generated outputs
-            output_ids = test_output_gen_batch.batch['responses']
-            output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
-            sample_outputs.extend(output_texts)
-
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
@@ -654,21 +661,20 @@ class RayPPOTrainer:
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         data_sources = np.concatenate(data_source_lst, axis=0)
-
+        
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_inputs, reward_extra_infos_dict)
+        
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
             for var_name, metric2val in var2metric2val.items():
                 n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
                 for metric_name, metric_val in metric2val.items():
-                    if (var_name == core_var) and any(metric_name.startswith(pfx) for pfx in ["mean", "maj", "best"]) and (f"@{n_max}" in metric_name):
-                        metric_sec = "val-core"
-                    else:
-                        metric_sec = "val-aux"
+                    is_core = (var_name == core_var) and any(metric_name.startswith(pfx) for pfx in ["mean", "maj", "best"]) and (f"@{n_max}/" in metric_name)
+                    metric_sec = "val-core" if is_core else "val-aux"
                     pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
                     metric_dict[pfx] = metric_val
-
+        
         return metric_dict
 
     def init_workers(self):
@@ -746,7 +752,22 @@ class RayPPOTrainer:
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
         if self.config.actor_rollout_ref.rollout.mode == "async":
+            # 确保搜索相关配置被正确传递给AsyncLLMServerManager
+            # AsyncLLMServerManager将这些配置传递给chat_scheduler
             self.async_rollout_mode = True
+            
+            # Log search configuration if enabled
+            if self.config.actor_rollout_ref.rollout.get('enable_search', False):
+                search_url = self.config.actor_rollout_ref.rollout.get('search_url', None)
+                search_topk = self.config.actor_rollout_ref.rollout.get('search_topk', 3)
+                max_turns = self.config.actor_rollout_ref.rollout.get('max_turns', 5)
+                print(f"[INFO] Initializing async server with search enabled. URL: {search_url}, TopK: {search_topk}, MaxTurns: {max_turns}")
+                # 确保chat_scheduler配置有效
+                chat_scheduler = self.config.actor_rollout_ref.rollout.get('chat_scheduler', None)
+                if not chat_scheduler or 'search_chat_scheduler' not in chat_scheduler:
+                    print(f"[WARNING] Search is enabled but chat_scheduler doesn't appear to be search-enabled: {chat_scheduler}")
+            
+            # 创建AsyncLLMServerManager - 会根据配置创建正确的ChatCompletionScheduler
             self.async_rollout_manager = AsyncLLMServerManager(
                 config=self.config.actor_rollout_ref,
                 worker_group=self.actor_rollout_wg,
