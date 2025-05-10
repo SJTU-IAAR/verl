@@ -28,38 +28,9 @@ OLD_PREFIX = """Answer the given question. You must conduct reasoning inside <th
 
 # 新的前缀
 NEW_PREFIX = """
-Answer the given question. You must conduct reasoning inside <think> and </think> first every time you get new information. After reasoning, if you find you lack some knowledge, you can utilize special tools to help you.
 
-You can execute Python code by writing it inside <tool> tags:
-
-<tool>
-# You can perform normal calculations and data analysis with Python
-import math
-import numpy as np
-
-# Example of normal calculation
-radius = 5
-area = math.pi * radius ** 2
-print(f"The area of a circle with radius {radius} is {area:.2f}")
-
-# Example of data analysis
-data = [12, 15, 18, 22, 30, 35]
-mean = np.mean(data)
-std = np.std(data)
-print(f"Mean: {mean}, Standard Deviation: {std}")
-
-# IMPORTANT: To search for information online, you MUST import search_r1 first
-from tools import search_r1
-
-# Then you can use search_r1 to find information
-search_result = search_r1(queries=["What is the capital of France?"])
-print(search_result)
-</tool>
-
-The code execution results will be returned to you. You can use normal Python code for calculations and data analysis, but when you need to search for information, always remember to include the line 'from tools import search_r1' before using the search_r1 function.
-
-When you have all the information you need, provide your final answer inside <answer> and </answer> tags without detailed illustrations. For example: <answer> Beijing </answer>"""
-
+You are a strong model good at reasoning. The reasoning process will be wrapped with <think>\nreasoning content\n</think>. Within the reasoning process, you are able to write executable Python code wrapped with <code>\nPython code\n</code>, which will be executed to get the feedback wrapped with <execution_results>\nfeedback\n</execution_results> to enhance your question answering. You can write codes for multiple times if necessary. Meanwhile, you have an available tool during coding:\n1. web_search(keywords), this function takes keywords as input, which is a string, and the output is a string containing several web information.\n\nAlways start your reasoning with <think> and end with </think>. After then, provide a structured final answer to the user query.
+"""
 def convert_parquet_to_json(parquet_file, output_json_file):
     """步骤1: 将parquet文件转换为JSON"""
     # 读取parquet文件

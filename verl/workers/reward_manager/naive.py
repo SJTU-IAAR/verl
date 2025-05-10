@@ -13,22 +13,65 @@
 # limitations under the License.
 
 from collections import defaultdict
+import os
+from pathlib import Path
 
 import torch
 
 from verl import DataProto
 from verl.utils.reward_score import _default_compute_score
+from verl.utils.logger.reward_logger import RewardLogger
 
 
 class NaiveRewardManager:
     """The reward manager."""
 
-    def __init__(self, tokenizer, num_examine, compute_score=None, reward_fn_key="data_source") -> None:
+    def __init__(self, 
+                 tokenizer, 
+                 num_examine, 
+                 compute_score=None, 
+                 reward_fn_key="data_source",
+                 config=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
         self.reward_fn_key = reward_fn_key
-
+        
+        # Initialize reward logger if logging is enabled
+        self.enable_logging = True  # Default to enabled
+        self.log_percentage = 0.1  # Default to 10%
+        self.log_dir = None
+        
+        # Parse configuration if provided
+        if config is not None and hasattr(config, 'reward_model') and hasattr(config.reward_model, 'logging'):
+            logging_config = config.reward_model.logging
+            if hasattr(logging_config, 'enable'):
+                self.enable_logging = logging_config.enable
+            if hasattr(logging_config, 'log_percentage'):
+                self.log_percentage = logging_config.log_percentage
+            if hasattr(logging_config, 'log_dir'):
+                self.log_dir = logging_config.log_dir
+        
+        self.reward_logger = None
+        if self.enable_logging:
+            # Determine log directory
+            if self.log_dir is None:
+                # Try to get from environment variables
+                self.log_dir = os.environ.get('REWARD_LOG_DIR', 'logs/reward_logs')
+                
+                # Get experiment name from environment if available
+                experiment_name = os.environ.get('EXPERIMENT_NAME', '')
+                if experiment_name:
+                    self.log_dir = Path(self.log_dir) / experiment_name
+            
+            # Initialize the logger
+            self.reward_logger = RewardLogger(
+                log_dir=self.log_dir,
+                prefix="reward_samples",
+                log_percentage=self.log_percentage,
+                verbose=True
+            )
+            
     def __call__(self, data: DataProto, return_dict=False):
         """We will expand this function gradually based on the available datasets"""
 
@@ -41,6 +84,10 @@ class NaiveRewardManager:
 
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
+        
+        # Track scores for batch summary
+        total_score = 0.0
+        data_sources_in_batch = set()
 
         already_print_data_sources = {}
 
@@ -65,6 +112,7 @@ class NaiveRewardManager:
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
 
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
+            data_sources_in_batch.add(data_source)
 
             extra_info = data_item.non_tensor_batch.get("extra_info", None)
 
@@ -80,10 +128,31 @@ class NaiveRewardManager:
                 # Store the information including original reward
                 for key, value in score.items():
                     reward_extra_info[key].append(value)
+                score_value = reward  # For logging and averaging
             else:
                 reward = score
+                score_value = score  # For logging and averaging
 
             reward_tensor[i, valid_response_length - 1] = reward
+            total_score += score_value
+
+            # Log sample data using our reward logger (if enabled)
+            if self.enable_logging and self.reward_logger:
+                # Pass all the sample data to the logger
+                # The logger internally decides whether to log this sample based on percentage
+                score_dict = score if isinstance(score, dict) else {"score": score}
+                self.reward_logger.log_sample(
+                    prompt=prompt_str,
+                    response=response_str,
+                    ground_truth=ground_truth,
+                    data_source=data_source,
+                    score=reward,  # Primary score
+                    extra_info={
+                        "score_details": score_dict,
+                        "extra_data": extra_info
+                    },
+                    batch_idx=i
+                )
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -98,6 +167,15 @@ class NaiveRewardManager:
                         print(f"[{key}]", value)
                 else:
                     print("[score]", score)
+        
+        # Log batch summary if logger is enabled
+        if self.enable_logging and self.reward_logger and len(data) > 0:
+            self.reward_logger.log_batch_summary(
+                batch_size=len(data),
+                avg_score=total_score / len(data),
+                data_sources=list(data_sources_in_batch),
+                additional_metrics={"total_score": total_score}
+            )
 
         if return_dict:
             return {
