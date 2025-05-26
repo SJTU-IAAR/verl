@@ -85,6 +85,19 @@ verl is fast with:
 
 .. toctree::
    :maxdepth: 1
+   :caption: Performance Tuning Guide
+   
+   perf/perf_tuning
+   README_vllm0.8.md
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Experimental Results
+
+   experiment/ppo
+
+.. toctree::
+   :maxdepth: 1
    :caption: Advance Usage and Extension
 
    advance/placement

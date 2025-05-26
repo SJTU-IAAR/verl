@@ -94,10 +94,34 @@ actor_rollout_ref:
     use_fire_sampling: False # https://arxiv.org/abs/2410.21236
     prompt_length: ${data.max_prompt_length}  # not use for opensource
     response_length: ${data.max_response_length}
+    # Search-enhanced generation configuration
+    enable_search: False  # Whether to enable search
+    search_url: "http://search-server:8000/retrieve"  # Search service URL
+    search_topk: 3  # Maximum number of search results to return
+    max_turns: 5  # Maximum number of interaction turns
+    search_stop: "</search>"  # Search stop token
+    max_concurrent_searches: 64   # 限制并发搜索请求数量
+    max_concurrent_completions: 100  # 限制并发LLM请求数量
+    searches_per_minute: 200  # 限制每分钟搜索请求数量 (速率控制)
+    ignore_eos: False  # Whether to ignore EOS token during generation
+    # State masking configuration
+    state_masking: True  # Whether to enable state masking
+    start_state_marker: "<information>"  # Start marker for state masking
+    end_state_marker: "</information>"  # End marker for state masking
+    # Tool execution configuration
+    tool_config:
+      enabled: False  # Whether to enable tool functionality 
+      server_url: "http://127.0.0.1:30003"  # Tool server URL
+      max_tool_turns: 3  # Maximum number of tool calls
+      max_retries: 3  # Maximum number of retries on tool execution failure
+      retry_delay: 2.0  # Retry delay in seconds (increased)
+      timeout: 30.0  # Tool execution timeout in seconds
+      max_workers: 10  # Maximum number of parallel tools (reduced from 30)
+      request_interval: 0.5  # Request interval in seconds (increased from 0.1)
+      rate_limit_per_minute: 60.0  # Maximum number of requests per minute (reduced from 120)
     # for vllm rollout
     dtype: bfloat16 # should align with FSDP
     gpu_memory_utilization: 0.5
-    ignore_eos: False
     enforce_eager: True
     free_cache_engine: True
     load_format: dummy_dtensor
@@ -194,6 +218,11 @@ reward_model:
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
   reward_manager: naive
   launch_reward_fn_async: False # custom reward function executed async on CPU, during log_prob
+  # Reward logging configuration
+  logging:
+    enable: True  # Whether to enable detailed reward logging
+    log_percentage: 0.1  # Percentage of samples to log (10%)
+    log_dir: null  # Log directory, null will use environment variable or default
 
 custom_reward_function:
   path: null

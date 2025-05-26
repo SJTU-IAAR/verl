@@ -200,7 +200,7 @@ def process_validation_metrics(data_sources: list[str], sample_inputs: list[str]
         var2vals = data_src2prompt2var2vals[data_source][prompt]
         for var_name, var_vals in infos_dict.items():
             var2vals[var_name].append(var_vals[sample_idx])
-
+    
     # Calculate metrics for each group
     data_src2prompt2var2metric = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     for data_source, prompt2var2vals in data_src2prompt2var2vals.items():
@@ -245,8 +245,16 @@ def process_validation_metrics(data_sources: list[str], sample_inputs: list[str]
                                     seed=seed,
                                 )
                                 metric[f"maj@{n}/mean"], metric[f"maj@{n}/std"] = maj_n_mean, maj_n_std
-
-                    data_src2prompt2var2metric[data_source][prompt][var_name] = metric
+                else:
+                    # 单响应情况下，添加简单指标
+                    metric[f"best@{n_resps}/mean"] = var_vals[0]  # 单个响应，max=min=值本身
+                    metric[f"worst@{n_resps}/mean"] = var_vals[0]
+                    if var2vals.get("pred", None) is not None:
+                        vote_data = [{"val": val, "pred": pred} for val, pred in zip(var_vals, var2vals["pred"])]
+                        metric[f"maj@{n_resps}/mean"] = var_vals[0]  # 单个响应，众数就是值本身
+                
+                # 无论单响应还是多响应，都添加指标
+                data_src2prompt2var2metric[data_source][prompt][var_name] = metric
 
     # Aggregate metrics across prompts
     data_src2var2metric2prompt_vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -261,5 +269,5 @@ def process_validation_metrics(data_sources: list[str], sample_inputs: list[str]
         for var_name, metric2prompt_vals in var2metric2prompt_vals.items():
             for metric_name, prompt_vals in metric2prompt_vals.items():
                 data_src2var2metric2val[data_source][var_name][metric_name] = np.mean(prompt_vals)
-
+    
     return data_src2var2metric2val

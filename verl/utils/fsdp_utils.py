@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Dict
 import functools
 import itertools
 import json
@@ -28,6 +29,8 @@ from torch.distributed import DeviceMesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp._runtime_utils import _lazy_init
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer_auto_wrap_policy
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp._runtime_utils import _lazy_init
 from transformers.trainer_pt_utils import get_module_class_from_name
 
 if version.parse(torch.__version__) >= version.parse("2.6"):

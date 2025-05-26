@@ -28,6 +28,7 @@ from transformers import PreTrainedTokenizer
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.model import compute_position_id_with_mask
+from verl.utils import hf_tokenizer
 
 
 class SFTDataset(Dataset):

@@ -216,6 +216,27 @@ class FSDPSFTTrainer:
                 }
                 self.model = get_peft_model(self.model, LoraConfig(**lora_config))
 
+            if self.use_remove_padding or self.config.ulysses_sequence_parallel_size > 1:
+                from verl.models.transformers.monkey_patch import apply_monkey_patch
+                apply_monkey_patch(model=self.model, ulysses_sp_size=self.config.ulysses_sequence_parallel_size)
+
+            # Apply Liger kernel if use_liger is enabled
+            if self.config.model.get('use_liger', False):
+                from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
+                _apply_liger_kernel_to_instance(model=self.model)
+
+            if self.config.model.get('lora_rank', 0) > 0:
+                self.model.enable_input_require_grads()
+                # Convert config to regular Python types before creating PEFT model
+                lora_config = {
+                    'task_type': TaskType.CAUSAL_LM,
+                    'r': self.config.model.lora_rank,
+                    'lora_alpha': self.config.model.lora_alpha,
+                    'target_modules': convert_to_regular_types(self.config.model.target_modules),
+                    'bias': "none"
+                }
+                self.model = get_peft_model(self.model, LoraConfig(**lora_config))
+
         if self.config.model.enable_gradient_checkpointing:
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
