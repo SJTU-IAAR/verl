@@ -114,10 +114,11 @@ actor_rollout_ref:
       server_url: "http://127.0.0.1:30003"  # Tool server URL
       max_tool_turns: 3  # Maximum number of tool calls
       max_retries: 3  # Maximum number of retries on tool execution failure
-      retry_delay: 1.0  # Retry delay in seconds
+      retry_delay: 2.0  # Retry delay in seconds (increased)
       timeout: 30.0  # Tool execution timeout in seconds
-      max_workers: 10  # Maximum number of parallel tools
-      request_interval: 0.1  # Request interval in seconds
+      max_workers: 10  # Maximum number of parallel tools (reduced from 30)
+      request_interval: 0.5  # Request interval in seconds (increased from 0.1)
+      rate_limit_per_minute: 60.0  # Maximum number of requests per minute (reduced from 120)
     # for vllm rollout
     dtype: bfloat16 # should align with FSDP
     gpu_memory_utilization: 0.5

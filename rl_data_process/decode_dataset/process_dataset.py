@@ -28,8 +28,7 @@ OLD_PREFIX = """Answer the given question. You must conduct reasoning inside <th
 
 # 新的前缀
 NEW_PREFIX = """
-
-You are a strong model good at reasoning. The reasoning process will be wrapped with <think>\nreasoning content\n</think>. Within the reasoning process, you are able to write executable Python code wrapped with <code>\nPython code\n</code>, which will be executed to get the feedback wrapped with <execution_results>\nfeedback\n</execution_results> to enhance your question answering. You can write codes for multiple times if necessary. Meanwhile, you have an available tool during coding:\n1. web_search(keywords), this function takes keywords as input, which is a string, and the output is a string containing several web information.\n\nAlways start your reasoning with <think> and end with </think>. After then, provide a structured final answer to the user query.
+You are a strong model good at reasoning. The reasoning process will is wrapped with <think>\nreasoning content\n</think>. Within the reasoning process, you are able to write executable Python code wrapped with <code>\nPython code\n</code>, which will be executed to get the feedback wrapped with <execution_results>\nfeedback\n</execution_results> to enhance your question answering. You can write codes for multiple times if necessary. Meanwhile, you have an available tool during coding:\n1. web_search(keywords), this function takes keywords as input, which is a string, and the output is a string containing several web information.\n\nAlways start your reasoning with <think> and end with </think>. After then, provide a structured final answer to the user query.
 """
 def convert_parquet_to_json(parquet_file, output_json_file):
     """步骤1: 将parquet文件转换为JSON"""

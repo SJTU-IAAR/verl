@@ -30,6 +30,11 @@ import re
 import requests
 import time
 import torch.nn.utils.rnn as rnn_utils
+import threading
+import fcntl
+import tempfile
+import json
+import random
 
 from verl import DataProto
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
@@ -39,7 +44,59 @@ from vllm import LLM, SamplingParams
 from verl.third_party.vllm import vllm_version
 from verl.workers.rollout.vllm_rollout.tool_client import ToolClient
 
+class GlobalRateLimiter:
+    """真正的跨进程全局速率限制器，使用文件锁实现"""
+    
+    def __init__(self, rate_limit_per_minute: float = 60.0, lock_file: str = None):
+        self.rate = rate_limit_per_minute / 60.0  # requests per second
+        self.lock_file = lock_file or os.path.join(tempfile.gettempdir(), "verl_global_rate_limiter.lock")
+        self.state_file = self.lock_file + ".state"
+        
+    def get_token(self) -> float:
+        """获取令牌，返回需要等待的时间"""
+        max_wait = 10.0  # 最大等待时间，防止死锁
+        
+        try:
+            with open(self.lock_file, 'w') as f:
+                # 尝试获取文件锁，超时10秒
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                
+                # 读取当前状态
+                now = time.time()
+                last_request_time = now
+                
+                if os.path.exists(self.state_file):
+                    try:
+                        with open(self.state_file, 'r') as state_f:
+                            state = json.load(state_f)
+                            last_request_time = state.get('last_request_time', now)
+                    except:
+                        pass
+                
+                # 计算等待时间
+                time_since_last = now - last_request_time
+                min_interval = 1.0 / self.rate
+                
+                if time_since_last >= min_interval:
+                    wait_time = 0.0
+                    new_request_time = now
+                else:
+                    wait_time = min_interval - time_since_last
+                    new_request_time = last_request_time + min_interval
+                
+                # 更新状态
+                with open(self.state_file, 'w') as state_f:
+                    json.dump({'last_request_time': new_request_time}, state_f)
+                
+                return min(wait_time, max_wait)
+                
+        except (IOError, OSError):
+            # 如果文件锁失败，返回一个保守的等待时间
+            return 1.0
 
+# 全局速率限制器实例
+_global_rate_limiter = None
+_global_rate_limiter_lock = threading.Lock()
 
 class ToolEnabledVLLMRollout(vLLMRollout):
     """vLLM rollout with tool execution capabilities during generation"""
@@ -70,6 +127,15 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         self.max_turns = config.get('max_turns', 5)
         self.tool_stop = config.get('tool_stop', "</code>")
         
+        # Get tool client configuration
+        tool_config = config.get('tool_config', {})
+        max_retries = tool_config.get('max_retries', 3)
+        retry_delay = tool_config.get('retry_delay', 1.0)
+        timeout = tool_config.get('timeout', 30.0)
+        request_interval = tool_config.get('request_interval', 0.1)
+        max_workers = tool_config.get('max_workers', 10)
+        rate_limit_per_minute = tool_config.get('rate_limit_per_minute', 120.0)
+        
         # State masking configuration for handling execution results
         self.use_state_masking = config.get('state_masking', True)
         state_masking_config = config.get('state_masking', {})
@@ -80,29 +146,58 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             self.start_state_marker = "<execution_results>"
             self.end_state_marker = "</execution_results>"
         
-        # Initialize tool client
+        # Initialize tool client with rate limiting and master forwarding
+        master_ip = os.environ.get('MASTER_ADDR', '192.168.154.83')
+        print(f"[DEBUG] Using master IP for tool forwarding: {master_ip}")
+        
         self.tool_client = ToolClient(
             server_url=self.tool_server_url,
-            max_retries=config.get('tool_config', {}).get('max_retries', 3),
-            retry_delay=config.get('tool_config', {}).get('retry_delay', 1.0),
-            timeout=config.get('tool_config', {}).get('timeout', 30.0),
-            request_interval=config.get('tool_config', {}).get('request_interval', 0.1),
-            max_workers=config.get('tool_config', {}).get('max_workers', 10)
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            timeout=timeout,
+            request_interval=request_interval,
+            max_workers=max_workers,
+            rate_limit_per_minute=rate_limit_per_minute,
+            master_ip=master_ip
         )
         
+        # Set up global rate limiter for cross-GPU coordination
+        global _global_rate_limiter
+        with _global_rate_limiter_lock:
+            if _global_rate_limiter is None:
+                _global_rate_limiter = GlobalRateLimiter(
+                    rate_limit_per_minute=rate_limit_per_minute
+                )
+                print(f"[DEBUG] Cross-process global rate limiter initialized: {rate_limit_per_minute} RPM")
+        
+        self.global_rate_limiter = _global_rate_limiter
+        
         # Configure regex patterns for tool extraction
-        self.tool_pattern = r'<code>(.*?)</code>'
+        self.tool_pattern = r'<code>\s*\n?(.*?)\n?\s*</code>'
+        self.answer_pattern = r'<answer>(.*?)</answer>'
         
         # Device configuration
         self.model_device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         
-        # Configure sampling parameters
-        self.sampling_params.stop = [self.tool_stop]
+        # Configure sampling parameters - don't stop at </code>, let model continue
+        # We'll handle stopping logic in our multi-turn generation
+        self.sampling_params.stop = []  # Remove automatic stopping
         self.sampling_params.ignore_eos = False
         if hasattr(self.sampling_params, 'detokenize') and vllm_version != '0.3.1':
             self.sampling_params.detokenize = True
             
         print(f"Tool-enabled vLLM rollout initialized with server URL: {self.tool_server_url}")
+        print(f"Rate limiting: {rate_limit_per_minute} requests/minute with max {max_workers} workers")
+
+    def _has_final_answer(self, text):
+        """Check if the text contains a final answer"""
+        # Check for <answer> tags
+        if re.search(self.answer_pattern, text, re.DOTALL):
+            return True
+        # Check for boxed format
+        if re.search(r'\\boxed\{[^}]+\}', text):
+            return True
+        return False
 
     def _process_tools_in_batch(self, responses):
         """
@@ -130,34 +225,69 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         final_outputs = [None] * batch_size
         
         for i, text in enumerate(response_texts):
-            # Look for code blocks to execute
             tool_match = re.search(self.tool_pattern, text, re.DOTALL)
+            answer_match = re.search(self.answer_pattern, text, re.DOTALL)
+            boxed_match = re.search(r'\\boxed\{[^}]+\}', text)
             
-            if tool_match:
+            if answer_match or boxed_match:
+                # Found final answer, stop generation (highest priority)
+                if answer_match:
+                    final_outputs[i] = answer_match.group(1).strip()
+                else:
+                    final_outputs[i] = text
+                need_continue[i] = False
+            elif tool_match:
                 # Extract code and prepare for execution
                 code = tool_match.group(1).strip()
-                
-                # Replace web_search with search_r1 in the code
-                code = code.replace("web_search(", "search_r1(")
-                
                 # Add the tools import to the code
                 code = "from tools import *\n\n" + code
-                
                 tool_codes.append(code)
                 tool_results_mapping[i] = len(tool_codes) - 1
                 need_continue[i] = True
-                print(f"[DEBUG] Found tool call in sample {i}: {code[:100]}...")
             else:
-                # No tool call found
+                # No valid operation found
                 need_continue[i] = False
-                final_outputs[i] = text
-                print(f"[DEBUG] No tool call found in sample {i}")
         
         # Execute all tool codes in batch
         tool_results = {}
         if tool_codes:
             try:
-                results_list = self.tool_client.batch_execute(tool_codes)
+                # Apply global rate limiting before batch execution
+                print(f"[DEBUG] Processing {len(tool_codes)} tool calls with global rate limiting")
+                
+                # Limit the number of concurrent tool calls to prevent server overload
+                max_concurrent_tools = min(len(tool_codes), 5)  # Conservative limit
+                
+                if len(tool_codes) > max_concurrent_tools:
+                    print(f"[DEBUG] Limiting tool calls from {len(tool_codes)} to {max_concurrent_tools} to prevent server overload")
+                    
+                    # Execute in smaller batches
+                    all_results = []
+                    for i in range(0, len(tool_codes), max_concurrent_tools):
+                        batch_codes = tool_codes[i:i + max_concurrent_tools]
+                        
+                        # Apply global rate limiting before each batch
+                        wait_time = self.global_rate_limiter.get_token()
+                        if wait_time > 0:
+                            print(f"[DEBUG] Global rate limit: waiting {wait_time:.2f}s before batch {i//max_concurrent_tools + 1}")
+                            time.sleep(wait_time)
+                        
+                        batch_results = self.tool_client.batch_execute(batch_codes)
+                        all_results.extend(batch_results)
+                        
+                        # Add delay between batches
+                        if i + max_concurrent_tools < len(tool_codes):
+                            time.sleep(1.0)  # 1 second delay between batches
+                    
+                    results_list = all_results
+                else:
+                    # Apply global rate limiting for small batches
+                    wait_time = self.global_rate_limiter.get_token()
+                    if wait_time > 0:
+                        print(f"[DEBUG] Global rate limit: waiting {wait_time:.2f}s before tool execution")
+                        time.sleep(wait_time)
+                    
+                    results_list = self.tool_client.batch_execute(tool_codes)
                 
                 # Map results back to original batch indices
                 for batch_idx, result_idx in tool_results_mapping.items():
@@ -546,7 +676,119 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         if input_batch_size != output_batch_size:
             print(f"[WARNING] Batch size mismatch: Input={input_batch_size}, Output={output_batch_size}")
         
+        # 10% random logging of final generation results
+        if random.random() < 0.1:
+            self._log_generation_results(prompts, result, end_time - start_time, is_validate)
+        
         return result
+
+    def _log_generation_results(self, prompts: DataProto, result: DataProto, generation_time: float, is_validate: bool):
+        """
+        Log detailed generation results for debugging and analysis (10% sampling)
+        
+        Args:
+            prompts: Input prompts
+            result: Generated results
+            generation_time: Time taken for generation
+            is_validate: Whether this is validation mode
+        """
+        try:
+            batch_size = result.batch['responses'].size(0)
+            
+            # Sample a few examples to log (max 3 for readability)
+            num_samples_to_log = min(3, batch_size)
+            sample_indices = random.sample(range(batch_size), num_samples_to_log)
+            
+            print(f"======== TOOL GENERATION RESULTS DEBUG (10% sample) ========")
+            print(f"Generation time: {generation_time:.2f}s")
+            print(f"Validation mode: {is_validate}")
+            print(f"Batch size: {batch_size}")
+            print(f"Tool usage enabled: {self.enable_tools}")
+            print(f"Max turns: {self.max_turns}")
+            print(f"Logging {num_samples_to_log} samples:")
+            
+            for idx_num, i in enumerate(sample_indices):
+                print(f"\n--- Sample {idx_num + 1} (index {i}) ---")
+                
+                # Decode original prompt
+                if 'prompts' in result.batch:
+                    prompt_tokens = result.batch['prompts'][i]
+                    # Remove padding tokens for cleaner display
+                    prompt_tokens_clean = prompt_tokens[prompt_tokens != self.pad_token_id]
+                    prompt_text = self.tokenizer.decode(prompt_tokens_clean, skip_special_tokens=True)
+                    print(f"Original prompt: {prompt_text[:200]}...")
+                    if len(prompt_text) > 200:
+                        print(f"Prompt length: {len(prompt_text)} chars")
+                
+                # Decode generated response
+                if 'responses' in result.batch:
+                    response_tokens = result.batch['responses'][i]
+                    # Remove padding tokens for cleaner display
+                    response_tokens_clean = response_tokens[response_tokens != self.pad_token_id]
+                    response_text = self.tokenizer.decode(response_tokens_clean, skip_special_tokens=True)
+                    
+                    print(f"Generated response length: {len(response_text)} chars")
+                    print(f"Generated response: {response_text[:300]}...")
+                    if len(response_text) > 300:
+                        print(f"Response ending: ...{response_text[-200:]}")
+                    
+                    # Count tool usage in response
+                    tool_count = self._count_tools_in_text(response_text)
+                    print(f"Tool calls detected: {tool_count}")
+                    
+                    # Check for search patterns
+                    search_count = len(re.findall(r'<search>.*?</search>', response_text, re.DOTALL))
+                    code_count = len(re.findall(r'<code>.*?</code>', response_text, re.DOTALL))
+                    answer_count = len(re.findall(r'<answer>.*?</answer>', response_text, re.DOTALL))
+                    
+                    print(f"Search blocks: {search_count}, Code blocks: {code_count}, Answer blocks: {answer_count}")
+                
+                # Check info mask
+                if 'info_mask' in result.batch:
+                    info_mask = result.batch['info_mask'][i]
+                    masked_tokens = info_mask.sum().item()
+                    total_tokens = info_mask.numel()
+                    mask_ratio = masked_tokens / total_tokens if total_tokens > 0 else 0
+                    print(f"Info mask: {masked_tokens}/{total_tokens} tokens masked ({mask_ratio:.1%})")
+                
+                # Log non-tensor data if available
+                if hasattr(result, 'non_tensor_batch') and result.non_tensor_batch:
+                    for key, values in result.non_tensor_batch.items():
+                        if i < len(values):
+                            print(f"{key}: {values[i]}")
+            
+            print(f"=============================================================")
+                        
+        except Exception as e:
+            print(f"[ERROR] Failed to log generation results: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _count_tools_in_text(self, text: str) -> int:
+        """
+        Count tool usage patterns in text
+        
+        Args:
+            text: Text to analyze
+            
+        Returns:
+            Number of tool usage patterns found
+        """
+        patterns = [
+            r'<code>.*?</code>',
+            r'<search>.*?</search>',
+            r'web_search\s*\(',
+            r'search_r1\s*\(',
+            r'calculator\s*\(',
+            r'python\s*\(',
+        ]
+        
+        total_count = 0
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            total_count += len(matches)
+        
+        return total_count
 
     def _create_info_mask(self, responses, start_marker, end_marker):
         """

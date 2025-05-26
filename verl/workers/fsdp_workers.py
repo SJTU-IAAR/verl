@@ -53,9 +53,17 @@ from verl.utils.fsdp_utils import (
 from verl.utils.import_utils import import_external_libs
 from verl.utils.model import compute_position_id_with_mask
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
+from vllm.distributed import parallel_state as vllm_ps
+from verl.third_party.vllm import vllm_version
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+try:
+    from importlib.metadata import version
+    package_version = version("vllm")
+except:
+    package_version = "unknown"
 
 
 def create_device_mesh(world_size, fsdp_size):
@@ -470,6 +478,7 @@ class ActorRolloutRefWorker(Worker):
             elif use_tools:
                 try:
                     # Use tool-enhanced rollout
+                    print(f"Initializing tool-enabled rollout with vllm_mode={vllm_mode}, package_version={package_version}")
                     from verl.workers.rollout.vllm_rollout import ToolEnabledVLLMRollout
                     
                     print(f"Initializing ToolEnabledVLLMRollout with tool_server_url={rollout_config.tool_config.server_url}")
@@ -483,18 +492,30 @@ class ActorRolloutRefWorker(Worker):
                             **rollout_kwargs
                         )
                     elif vllm_mode == "spmd":
-                        # Currently no SPMD support for tool execution
-                        print("WARNING: ToolEnabledVLLMRollout is not supported in SPMD mode, falling back to standard vLLMRollout")
-                        vllm_rollout_cls = vLLMRollout if rollout_config.mode == "sync" else vLLMAsyncRollout
-                        rollout = vllm_rollout_cls(
-                            model_path=local_path,
-                            config=rollout_config,
-                            tokenizer=self.tokenizer,
-                            model_hf_config=self.actor_model_config,
-                            device_mesh=rollout_device_mesh,
-                            trust_remote_code=trust_remote_code,
-                            **rollout_kwargs
-                        )
+                        if rollout_config.mode == "sync":
+                            # Use ToolEnabledVLLMRollout for sync mode in SPMD
+                            print("Using ToolEnabledVLLMRollout in SPMD sync mode")
+                            rollout = ToolEnabledVLLMRollout(
+                                model_path=local_path,
+                                config=rollout_config,
+                                tokenizer=self.tokenizer,
+                                model_hf_config=self.actor_model_config,
+                                device_mesh=rollout_device_mesh,
+                                trust_remote_code=trust_remote_code,
+                                **rollout_kwargs
+                            )
+                        else:
+                            # Currently no SPMD support for tool execution in async mode
+                            print("WARNING: ToolEnabledVLLMRollout is not supported in SPMD async mode, falling back to standard vLLMAsyncRollout")
+                            rollout = vLLMAsyncRollout(
+                                model_path=local_path,
+                                config=rollout_config,
+                                tokenizer=self.tokenizer,
+                                model_hf_config=self.actor_model_config,
+                                device_mesh=rollout_device_mesh,
+                                trust_remote_code=trust_remote_code,
+                                **rollout_kwargs
+                            )
                 
                 except ImportError as e:
                     print(f"WARNING: Failed to import ToolEnabledVLLMRollout: {e}")

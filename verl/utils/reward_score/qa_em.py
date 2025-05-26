@@ -60,7 +60,7 @@ def subem_check(prediction, golden_answers):
 
 
 def extract_solution(solution_str):
-    """提取答案，支持搜索和非搜索场景"""
+    """提取答案，支持搜索和非搜索场景，以及boxed格式"""
     # 首先尝试查找<answer>标签
     answer_pattern = r'<answer>(.*?)</answer>'
     answer_matches = list(re.finditer(answer_pattern, solution_str, re.DOTALL))
@@ -69,7 +69,51 @@ def extract_solution(solution_str):
         # 使用最后一个<answer>标签（对多轮交互有用）
         return answer_matches[-1].group(1).strip()
     
-    # 如果没有找到<answer>标签，尝试其他启发式方法
+    # 查找boxed格式：boxed{answer}或\boxed{answer}
+    # 改进正则表达式以处理反复boxed的情况
+    boxed_pattern = r'\\?boxed\{'
+    boxed_matches = []
+    
+    # 查找所有boxed开始位置
+    start_pos = 0
+    while True:
+        match = re.search(boxed_pattern, solution_str[start_pos:])
+        if not match:
+            break
+        
+        # 找到boxed开始位置
+        abs_start = start_pos + match.end()
+        
+        # 手动匹配大括号来处理嵌套
+        brace_count = 1
+        current_pos = abs_start
+        
+        while current_pos < len(solution_str) and brace_count > 0:
+            if solution_str[current_pos] == '{':
+                brace_count += 1
+            elif solution_str[current_pos] == '}':
+                brace_count -= 1
+            current_pos += 1
+        
+        if brace_count == 0:
+            # 成功匹配到完整的boxed内容
+            content = solution_str[abs_start:current_pos-1]
+            boxed_matches.append(content)
+        
+        start_pos = abs_start
+    
+    if boxed_matches:
+        # 对于反复boxed，递归提取最内层内容
+        final_answer = boxed_matches[-1]
+        
+        # 如果内容本身还包含boxed，递归提取
+        inner_boxed = extract_solution(final_answer)
+        if inner_boxed is not None:
+            return inner_boxed
+        else:
+            return final_answer.strip()
+    
+    # 如果没有找到标签，尝试其他启发式方法
     lines = solution_str.strip().split('\n')
     if lines:
         return lines[-1].strip()
@@ -80,16 +124,21 @@ def extract_solution(solution_str):
 def compute_score_em(solution_str, ground_truth, method='strict', format_score=0., score=1., return_dict=False):
     """统一的EM打分函数，适用于普通QA和搜索QA任务"""
     answer = extract_solution(solution_str=solution_str)
-    # do_print = random.randint(1, 64) == 1
+    # 10% 随机打印完整数据信息
+    do_print = random.random() < 0.1
     
-    # if do_print:
-    #     print(f"--------------------------------")
-    #     if isinstance(ground_truth, dict) and 'target' in ground_truth:
-    #         print(f"Golden answers: {ground_truth['target']}")
-    #     else:
-    #         print(f"Golden answers: {ground_truth}")
-    #     print(f"Extracted answer: {answer}")
-    #     print(f"Solution string: {solution_str}")
+    if do_print:
+        print(f"======== REWARD CALCULATION DEBUG (10% sample) ========")
+        if isinstance(ground_truth, dict) and 'target' in ground_truth:
+            print(f"Golden answers: {ground_truth['target']}")
+        else:
+            print(f"Golden answers: {ground_truth}")
+        print(f"Extracted answer: {answer}")
+        print(f"Solution string (first 500 chars): {solution_str[:500]}...")
+        if len(solution_str) > 500:
+            print(f"Solution string (last 200 chars): ...{solution_str[-200:]}")
+        else:
+            print(f"Full solution string: {solution_str}")
     
     if answer is None:
         result = 0
@@ -102,6 +151,11 @@ def compute_score_em(solution_str, ground_truth, method='strict', format_score=0
             result = score if em_check(answer, ground_truth) else format_score
         else:
             result = score if em_check(answer, ground_truth) else format_score
+    
+    if do_print:
+        print(f"Final score: {result}")
+        print(f"Score type: {type(result)}")
+        print(f"========================================================")
     
     # 如果需要返回字典格式
     if return_dict:
@@ -124,25 +178,40 @@ def compute_score_subem(solution_str, ground_truth, method='strict', format_scor
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str)
-    do_print = random.randint(1, 64) == 1
+    # 10% 随机打印完整数据信息
+    do_print = random.random() < 0.1
     
-    # if do_print:
-    #     print(f"--------------------------------")
-    #     print(f"Golden answers: {ground_truth['target']}")
-    #     print(f"Extracted answer: {answer}")
-    #     print(f"Solution string: {solution_str}")
+    if do_print:
+        print(f"======== SUBEM REWARD CALCULATION DEBUG (10% sample) ========")
+        print(f"Golden answers: {ground_truth['target']}")
+        print(f"Extracted answer: {answer}")
+        print(f"Solution string (first 500 chars): {solution_str[:500]}...")
+        if len(solution_str) > 500:
+            print(f"Solution string (last 200 chars): ...{solution_str[-200:]}")
+        else:
+            print(f"Full solution string: {solution_str}")
     
     if answer is None:
-        return 0
+        result = 0
     else:
         if subem_check(answer, ground_truth['target']):
-            return score
+            result = score
         else:
-            return format_score
+            result = format_score
+
+    if do_print:
+        print(f"Final score: {result}")
+        print(f"Score type: {type(result)}")
+        print(f"==============================================================")
+
+    return result
 
 # 添加一个可选的带过程奖励的计分函数
 def compute_score_with_process(solution_str, ground_truth, method='strict', search_bonus=0.3, answer_bonus=0.7):
     """带有过程奖励的评分函数，返回字典格式的详细信息"""
+    # 10% 随机打印完整数据信息
+    do_print = random.random() < 0.1
+    
     # 检查搜索行为
     search_pattern = r'<search>(.*?)</search>'
     search_count = len(re.findall(search_pattern, solution_str))
@@ -173,6 +242,27 @@ def compute_score_with_process(solution_str, ground_truth, method='strict', sear
     
     # 总分 = 过程分数 * 过程权重 + 基本分数 * 答案权重
     total_score = (process_score * search_bonus) + (base_score * answer_bonus)
+    
+    if do_print:
+        print(f"======== SEARCH REWARD CALCULATION DEBUG (10% sample) ========")
+        if isinstance(ground_truth, dict) and 'target' in ground_truth:
+            print(f"Golden answers: {ground_truth['target']}")
+        else:
+            print(f"Golden answers: {ground_truth}")
+        print(f"Extracted answer: {extracted_answer}")
+        print(f"Search count: {search_count}, Has search: {has_search}")
+        print(f"Info count: {info_count}, Has info: {has_info}")
+        print(f"Has answer tag: {has_answer}")
+        print(f"Process score: {process_score}")
+        print(f"Base score: {base_score}")
+        print(f"Search bonus weight: {search_bonus}, Answer bonus weight: {answer_bonus}")
+        print(f"Total score: {total_score}")
+        print(f"Solution string (first 500 chars): {solution_str[:500]}...")
+        if len(solution_str) > 500:
+            print(f"Solution string (last 200 chars): ...{solution_str[-200:]}")
+        else:
+            print(f"Full solution string: {solution_str}")
+        print(f"===============================================================")
     
     # 返回字典格式，包含更详细的信息
     return {

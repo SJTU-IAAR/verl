@@ -64,6 +64,16 @@ class NaiveRewardManager:
                 if experiment_name:
                     self.log_dir = Path(self.log_dir) / experiment_name
             
+            # Get log percentage from environment if available
+            env_log_percentage = os.environ.get('REWARD_LOG_PERCENTAGE')
+            if env_log_percentage:
+                try:
+                    self.log_percentage = float(env_log_percentage)
+                except ValueError:
+                    print(f"[WARNING] Invalid REWARD_LOG_PERCENTAGE: {env_log_percentage}")
+            
+            print(f"[RewardLogger] Initializing with log_dir: {self.log_dir}, percentage: {self.log_percentage}")
+            
             # Initialize the logger
             self.reward_logger = RewardLogger(
                 log_dir=self.log_dir,
