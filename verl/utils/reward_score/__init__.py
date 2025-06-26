@@ -29,7 +29,10 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
         from . import prime_math
 
         res = prime_math.compute_score(solution_str, ground_truth)
-    elif data_source in ["codecontests", "apps", "codeforces", "taco"]:
+    elif data_source == "taco":
+        from . import taco_reward
+        res = taco_reward.compute_score(solution_str, ground_truth)
+    elif data_source in ["codecontests", "apps", "codeforces"]:
         from . import prime_code
 
         res = prime_code.compute_score(solution_str, ground_truth, continuous=True)
@@ -40,11 +43,7 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
     # Using qa_em module to handle all QA tasks
     elif data_source in ["nq", "nq_search", "triviaqa", "popqa", "hotpotqa", "2wikimultihopqa", "musique", "bamboogle"]:
         from . import qa_em
-        # If it's a search task, use scoring with process reward
-        if data_source in ["nq_search"]:
-            res = qa_em.compute_score_with_process(solution_str, ground_truth)
-        else:
-            res = qa_em.compute_score_em(solution_str, ground_truth, return_dict=True)
+        res = qa_em.compute_score_em(solution_str, ground_truth, return_dict=True)
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 

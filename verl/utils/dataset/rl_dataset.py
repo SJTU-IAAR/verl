@@ -112,6 +112,7 @@ class RLHFDataset(Dataset):
         print(f"dataset len: {len(self.dataframe)}")
 
         # filter out too long prompts
+        # breakpoint()
         if self.filter_overlong_prompts:
             tokenizer = self.tokenizer
             prompt_key = self.prompt_key

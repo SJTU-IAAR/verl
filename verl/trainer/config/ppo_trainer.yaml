@@ -51,6 +51,7 @@ actor_rollout_ref:
     ppo_epochs: 1
     shuffle: False
     ulysses_sequence_parallel_size: 1 # sp size
+    state_masking: False
     checkpoint:
       contents: ['model', 'optimizer', 'extra']  # with 'hf_model' you can save whole model as hf format, now only use sharded model checkpoint to save space
     optim:
@@ -106,8 +107,8 @@ actor_rollout_ref:
     ignore_eos: False  # Whether to ignore EOS token during generation
     # State masking configuration
     state_masking: True  # Whether to enable state masking
-    start_state_marker: "<information>"  # Start marker for state masking
-    end_state_marker: "</information>"  # End marker for state masking
+    start_state_marker: "<execution_results>"  # Start marker for state masking
+    end_state_marker: "</execution_results>"  # End marker for state masking
     # Tool execution configuration
     tool_config:
       enabled: False  # Whether to enable tool functionality 
@@ -119,8 +120,10 @@ actor_rollout_ref:
       max_workers: 10  # Maximum number of parallel tools (reduced from 30)
       request_interval: 0.5  # Request interval in seconds (increased from 0.1)
       rate_limit_per_minute: 60.0  # Maximum number of requests per minute (reduced from 120)
+      tool_start: <code>
+      tool_end: </code>
     # for vllm rollout
-    dtype: bfloat16 # should align with FSDP
+    dtype: auto # should align with FSDP
     gpu_memory_utilization: 0.5
     enforce_eager: True
     free_cache_engine: True

@@ -108,7 +108,7 @@ class vLLMRollout(BaseRollout):
                 vllm_ps.initialize_model_parallel(tensor_model_parallel_size=tensor_parallel_size)
 
         assert model_hf_config.max_position_embeddings >= config.prompt_length + config.response_length, "model context length should be greater than total sequence length"
-
+        # breakpoint()
         max_model_len = int(config.max_model_len or config.prompt_length + config.response_length)
 
         if max_num_batched_tokens < max_model_len and self.config.enable_chunked_prefill:
@@ -203,13 +203,14 @@ class vLLMRollout(BaseRollout):
         # left-padded attention_mask
         attention_mask = prompts.batch["attention_mask"]
         position_ids = prompts.batch["position_ids"]
-
+        # breakpoint()
         # used to construct attention_mask
         eos_token_id = prompts.meta_info["eos_token_id"]
 
         batch_size = idx.size(0)
-
-        non_tensor_batch = prompts.non_tensor_batch
+        import copy
+        
+        non_tensor_batch = copy.deepcopy(prompts.non_tensor_batch)
         if "raw_prompt_ids" not in non_tensor_batch:
             non_tensor_batch["raw_prompt_ids"] = np.array([_pre_process_inputs(self.pad_token_id, idx[i]) for i in range(batch_size)], dtype=object)
 
@@ -250,9 +251,12 @@ class vLLMRollout(BaseRollout):
                 "temperature": self.config.val_kwargs.temperature,
                 "n": 1,  # if validate, already repeat in ray_trainer
             }
-
+        if self.config['tool_config']['enabled']:
+            kwargs['stop'] = [self.config['tool_config']['tool_end']]
+        # breakpoint()
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
+            # breakpoint()
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,

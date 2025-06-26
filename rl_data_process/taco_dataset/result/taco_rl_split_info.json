@@ -1,0 +1,12 @@
+{
+  "input_file": "/mnt/chensiheng/shuotang/git_repo_h200/AI-Researcher/verl/rl_data_process/taco_dataset/result/taco_rl.parquet",
+  "total_samples": 12898,
+  "train_samples": 10318,
+  "test_samples": 2580,
+  "train_ratio": 0.8,
+  "test_ratio": 0.19999999999999996,
+  "train_file": "/mnt/chensiheng/shuotang/git_repo_h200/AI-Researcher/verl/rl_data_process/taco_dataset/result/taco_rl_train.parquet",
+  "test_file": "/mnt/chensiheng/shuotang/git_repo_h200/AI-Researcher/verl/rl_data_process/taco_dataset/result/taco_rl_test.parquet",
+  "split_method": "huggingface_datasets_percentage",
+  "note": "使用VERL官方方式进行数据拆分"
+}

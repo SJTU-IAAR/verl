@@ -124,9 +124,9 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         # Set tool-related configuration
         self.enable_tools = config.get('tool_config', {}).get('enabled', False)
         self.tool_server_url = config.get('tool_config', {}).get('server_url', 'http://localhost:8000/execute')
-        self.max_turns = config.get('max_turns', 5)
-        self.tool_stop = config.get('tool_stop', "</code>")
-        
+
+        self.max_turns = config.get('max_turns', 5) if not self.enable_tools else config.get('tool_config')['max_tool_turns']
+        # breakpoint()
         # Get tool client configuration
         tool_config = config.get('tool_config', {})
         max_retries = tool_config.get('max_retries', 3)
@@ -199,12 +199,13 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             return True
         return False
 
-    def _process_tools_in_batch(self, responses):
+    def _process_tools_in_batch(self, responses, prompts_data: DataProto):
         """
         Process a batch of responses to identify and execute tool calls
         
         Args:
             responses: Tensor containing response token IDs
+            prompts_data: The original DataProto object containing non-tensor info
         
         Returns:
             Tuple of (need_continue_flags, tool_results, final_outputs)
@@ -218,10 +219,26 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         # Decode responses to text
         response_texts = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
         
+        # Get data_source and input_output for each item in the batch from the original prompts_data
+        original_batch_size = len(next(iter(prompts_data.non_tensor_batch.values())))
+        data_sources_array = prompts_data.non_tensor_batch.get('data_source', [None] * original_batch_size)
+        # Convert numpy array to list if needed
+        data_sources = data_sources_array.tolist() if hasattr(data_sources_array, 'tolist') else data_sources_array
+        
+        # Correctly extract input_outputs from tools_kwargs
+        all_tools_kwargs = prompts_data.non_tensor_batch.get('tools_kwargs', [])
+        if len(all_tools_kwargs) > 0:
+            input_outputs = [kwargs.get('input_outputs') for kwargs in all_tools_kwargs]
+        else:
+            input_outputs = [None] * original_batch_size
+
         # Process each response to find tool calls
         tool_codes = []
+        tool_data_sources = []
+        tool_input_outputs = []
         need_continue = [False] * batch_size
-        tool_results_mapping = {}  # Maps batch index to tool result position
+        tool_code_indices = {}  # Maps tool_code index to original batch index
+
         final_outputs = [None] * batch_size
         
         for i, text in enumerate(response_texts):
@@ -229,82 +246,68 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             answer_match = re.search(self.answer_pattern, text, re.DOTALL)
             boxed_match = re.search(r'\\boxed\{[^}]+\}', text)
             
-            if answer_match or boxed_match:
-                # Found final answer, stop generation (highest priority)
-                if answer_match:
-                    final_outputs[i] = answer_match.group(1).strip()
+            # Get data source for this specific sample
+            current_data_source = data_sources[i] if i < len(data_sources) else None
+            
+            # Handle answer logic based on data source
+            if answer_match:
+                if current_data_source == 'taco':
+                    # For TACO: execute code in <answer> tag and terminate
+                    answer_content = answer_match.group(1).strip()
+                    if answer_content:  # Only execute if there's actual code
+                        tool_codes.append(answer_content)
+                        tool_data_sources.append(current_data_source)
+                        tool_input_outputs.append(input_outputs[i] if i < len(input_outputs) else None)
+                        tool_code_indices[len(tool_codes) - 1] = i
+                    # Always terminate for answer in TACO
+                    need_continue[i] = False
+                    final_outputs[i] = answer_content if answer_content else "No code provided in answer"
                 else:
-                    final_outputs[i] = text
+                    # For non-TACO (e.g., NQ): treat as final answer, no execution
+                    final_outputs[i] = answer_match.group(1).strip()
+                    need_continue[i] = False
+            elif boxed_match:
+                # Found boxed answer, stop generation (typically for math problems)
+                final_outputs[i] = text
                 need_continue[i] = False
             elif tool_match:
-                # Extract code and prepare for execution
+                # Extract code and prepare for execution (continue generation)
                 code = tool_match.group(1).strip()
-                # Add the tools import to the code
-                code = "from tools import *\n\n" + code
                 tool_codes.append(code)
-                tool_results_mapping[i] = len(tool_codes) - 1
+                tool_data_sources.append(current_data_source)
+                tool_input_outputs.append(input_outputs[i] if i < len(input_outputs) else None)
+                tool_code_indices[len(tool_codes) - 1] = i
                 need_continue[i] = True
             else:
                 # No valid operation found
                 need_continue[i] = False
         
-        # Execute all tool codes in batch
+        # Execute all tool codes (both from <code> and <answer> tags)
         tool_results = {}
         if tool_codes:
             try:
-                # Apply global rate limiting before batch execution
-                print(f"[DEBUG] Processing {len(tool_codes)} tool calls with global rate limiting")
-                
-                # Limit the number of concurrent tool calls to prevent server overload
-                max_concurrent_tools = min(len(tool_codes), 5)  # Conservative limit
-                
-                if len(tool_codes) > max_concurrent_tools:
-                    print(f"[DEBUG] Limiting tool calls from {len(tool_codes)} to {max_concurrent_tools} to prevent server overload")
-                    
-                    # Execute in smaller batches
-                    all_results = []
-                    for i in range(0, len(tool_codes), max_concurrent_tools):
-                        batch_codes = tool_codes[i:i + max_concurrent_tools]
-                        
-                        # Apply global rate limiting before each batch
-                        wait_time = self.global_rate_limiter.get_token()
-                        if wait_time > 0:
-                            print(f"[DEBUG] Global rate limit: waiting {wait_time:.2f}s before batch {i//max_concurrent_tools + 1}")
-                            time.sleep(wait_time)
-                        
-                        batch_results = self.tool_client.batch_execute(batch_codes)
-                        all_results.extend(batch_results)
-                        
-                        # Add delay between batches
-                        if i + max_concurrent_tools < len(tool_codes):
-                            time.sleep(1.0)  # 1 second delay between batches
-                    
-                    results_list = all_results
-                else:
-                    # Apply global rate limiting for small batches
-                    wait_time = self.global_rate_limiter.get_token()
-                    if wait_time > 0:
-                        print(f"[DEBUG] Global rate limit: waiting {wait_time:.2f}s before tool execution")
-                        time.sleep(wait_time)
-                    
-                    results_list = self.tool_client.batch_execute(tool_codes)
+                results_list = self.tool_client.batch_execute(
+                    codes=tool_codes, 
+                    data_sources=tool_data_sources,
+                    input_outputs=tool_input_outputs
+                )
                 
                 # Map results back to original batch indices
-                for batch_idx, result_idx in tool_results_mapping.items():
-                    if result_idx < len(results_list):
-                        result = results_list[result_idx]
+                for result_idx, result in enumerate(results_list):
+                    batch_idx = tool_code_indices.get(result_idx)
+                    if batch_idx is not None:
                         if result.get("success", False):
-                            tool_results[int(batch_idx)] = result.get('output', '')
-                            print(f"[DEBUG] Tool execution successful for sample {batch_idx}")
+                            tool_results[batch_idx] = result.get('output', '')
                         else:
                             error_message = result.get('error', 'Unknown error')
-                            tool_results[int(batch_idx)] = f"Error: {error_message}"
-                            print(f"[DEBUG] Tool execution failed for sample {batch_idx}: {error_message}")
+                            tool_results[batch_idx] = f"Error: {error_message}"
+                
             except Exception as e:
-                print(f"Error during tool execution: {e}")
-                # Provide a default response for errors
-                for batch_idx in tool_results_mapping:
-                    tool_results[int(batch_idx)] = f"Tool execution failed due to an error: {str(e)}"
+                import traceback
+                traceback.print_exc()
+                # Provide a default response for errors for all pending tool calls
+                for tool_idx in tool_code_indices.values():
+                    tool_results[tool_idx] = f"Tool execution failed due to a system error: {str(e)}"
         
         return need_continue, tool_results, final_outputs
     
@@ -428,10 +431,13 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             }
         
         # Configure maximum turns
-        max_turns = min(self.max_turns, 3) if is_validate else self.max_turns
+        # max_turns = min(self.max_turns, 3) if is_validate else self.max_turns
+        max_turns = self.max_turns
         max_prompt_length = self.config.prompt_length
         max_response_length = self.config.response_length
         
+        # breakpoint()
+
         # Handle n_samples > 1 by repeating inputs
         if n_samples > 1 and do_sample:
             original_inputs = input_ids.repeat_interleave(n_samples, dim=0)
@@ -467,6 +473,8 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             # Process non-tensor batch items
             active_non_tensor = {}
             for key, val in prompts.non_tensor_batch.items():
+                if key == 'raw_prompt_ids':
+                    continue
                 try:
                     if len(val) == batch_size and n_samples > 1 and do_sample:
                         # Handle repeating non-tensor data
@@ -483,10 +491,11 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             # Force n=1 for each turn to avoid dimension explosion
             local_kwargs = kwargs.copy()
             local_kwargs['n'] = 1
-            
+            # breakpoint()
             # Call parent class's generate_sequences for this turn
             gen_output = super().generate_sequences(active_prompts, **{**local_kwargs, **tool_kwargs})
             responses = gen_output.batch['responses']
+            # breakpoint()
             
             # Ensure response dimensions are correct
             if responses.shape[0] != num_active:
@@ -508,7 +517,7 @@ class ToolEnabledVLLMRollout(vLLMRollout):
                     turn_responses[idx] = responses[i]
             
             # Process tool calls and execute tools
-            need_continue, tool_results, turn_outputs = self._process_tools_in_batch(responses)
+            need_continue, tool_results, turn_outputs = self._process_tools_in_batch(responses, active_prompts)
             
             # Update active mask and collect final outputs
             new_active_indices = []
@@ -581,6 +590,8 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         elif combined_responses.size(1) > max_response_length:
             combined_responses = combined_responses[:, :max_response_length]
         
+        # breakpoint()
+
         # Create info mask for masking out tool execution results during training
         try:
             info_mask = self._create_info_mask(combined_responses, self.start_state_marker, self.end_state_marker)
@@ -598,6 +609,8 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         
         # Ensure info_mask has correct format
         info_mask = ((~info_mask) & attention_mask[:, -info_mask.shape[1]:]).bool()
+
+        # breakpoint()
         
         # Build final output
         final_output = {
@@ -643,6 +656,7 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             DataProto: Generated responses
         """
         # Log input information
+        # breakpoint()
         input_batch_size = prompts.batch.batch_size[0] if prompts.batch is not None else None
         
         # Ensure meta_info exists and contains eos_token_id
@@ -817,13 +831,16 @@ class ToolEnabledVLLMRollout(vLLMRollout):
         info_mask = torch.zeros((batch_size, seq_len), dtype=torch.bool, device=device)
         
         for i, text in enumerate(response_texts):
+            # breakpoint()
             try:
                 # Find all information regions
                 start_positions = [m.start() for m in re.finditer(re.escape(start_marker), text)]
-                end_positions = [m.start() for m in re.finditer(re.escape(end_marker), text)]
+                end_positions = [m.end() for m in re.finditer(re.escape(end_marker), text)]
                 
+                magic_number = len(start_positions) - len(end_positions)
+
                 # Ensure markers appear in pairs
-                if len(start_positions) != len(end_positions):
+                if magic_number > 1 or magic_number < 0:
                     print(f"[WARNING] Mismatched markers for sample {i}: {len(start_positions)} starts, {len(end_positions)} ends")
                     continue
                 
@@ -831,7 +848,17 @@ class ToolEnabledVLLMRollout(vLLMRollout):
                     continue
                 
                 # Convert text positions to token positions
-                for start_pos, end_pos in zip(start_positions, end_positions):
+
+                while start_positions:
+                    start_pos = start_positions.pop(0)
+                    if end_positions:
+                        end_pos = end_positions.pop(0)
+                    else:
+                        end_pos = len(text) - 1
+
+
+
+                # for start_pos, end_pos in zip(start_positions, end_positions):
                     if start_pos >= end_pos:
                         continue
                     
@@ -851,7 +878,7 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             except Exception as e:
                 print(f"Error creating info mask for sample {i}: {e}")
                 continue
-        
+            # breakpoint()
         # True values indicate information regions (not for training)
         return info_mask
 

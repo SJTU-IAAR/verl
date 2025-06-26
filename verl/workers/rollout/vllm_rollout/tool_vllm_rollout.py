@@ -356,6 +356,7 @@ class ToolEnabledVLLMRollout(vLLMRollout):
             Generated responses as DataProto.
         """
         # 打印当前enable_tools状态
+        # breakpoint()
         print(f"[DEBUG] generate_sequences - Current enable_tools value: {self.enable_tools}")
         
         # Record input information
