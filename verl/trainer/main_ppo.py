@@ -164,7 +164,6 @@ class TaskRunner:
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
         from verl.utils.dataset.rl_dataset import collate_fn
-        # breakpoint()
 
         train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
         val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)
@@ -222,12 +221,13 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor):
     return dataset
 
 
-def create_rl_sampler(data_config, dataset):
+def create_rl_sampler(data_config, dataset, is_training=True):
     """Create a sampler for the dataset.
 
     Arguments:
         data_config: The data config.
         dataset (Dataset): The dataset.
+        is_training (bool): Whether this is for training (enables multi-dataset sampling)
 
     Returns:
         sampler (Sampler): The sampler.
@@ -235,7 +235,63 @@ def create_rl_sampler(data_config, dataset):
     import torch
     from torch.utils.data import RandomSampler, SequentialSampler
 
-    # use sampler for better ckpt resume
+    # Check if multi-dataset sampling is enabled for training
+    multi_dataset_config = data_config.get("multi_dataset_sampling", {})
+    enable_multi_dataset = multi_dataset_config.get("enable", False) and is_training
+    
+    if enable_multi_dataset:
+        # Use multi-dataset sampling for training
+        dataset_ratios = multi_dataset_config.get("dataset_ratios", {})
+        sampler_type = multi_dataset_config.get("sampler_type", "weighted")
+        
+        # Check for dataset ratios from environment variable (JSON format)
+        import os
+        import json
+        env_ratios = os.environ.get("DATASET_RATIOS")
+        if env_ratios:
+            try:
+                env_dataset_ratios = json.loads(env_ratios)
+                print(f"Using dataset ratios from environment: {env_dataset_ratios}")
+                dataset_ratios = env_dataset_ratios
+            except json.JSONDecodeError as e:
+                print(f"ERROR: Failed to parse DATASET_RATIOS environment variable: {e}")
+                print(f"Received: {env_ratios}")
+                print("Falling back to config file ratios")
+        
+        if not dataset_ratios:
+            print("WARNING: multi_dataset_sampling enabled but dataset_ratios is empty, falling back to standard sampling")
+            enable_multi_dataset = False
+        else:
+            # Validate ratios sum to 1.0
+            total_ratio = sum(dataset_ratios.values())
+            if abs(total_ratio - 1.0) > 1e-6:
+                print(f"WARNING: dataset ratios sum to {total_ratio}, not 1.0. Normalizing...")
+                dataset_ratios = {k: v/total_ratio for k, v in dataset_ratios.items()}
+            
+            print(f"Creating multi-dataset sampler for training:")
+            print(f"  Sampler type: {sampler_type}")
+            print(f"  Dataset ratios: {dataset_ratios}")
+            
+            # Import and use custom sampler
+            try:
+                from verl.utils.dataset.multi_dataset_sampler import create_multi_dataset_sampler
+                
+                sampler = create_multi_dataset_sampler(
+                    dataset=dataset,
+                    data_config=data_config,
+                    sampler_type=sampler_type,
+                    dataset_ratios=dataset_ratios
+                )
+                
+                print(f"Successfully created {sampler_type} sampler for multi-dataset training")
+                return sampler
+                
+            except ImportError as e:
+                print(f"ERROR: Failed to import multi-dataset sampler: {e}")
+                print("Falling back to standard sampling")
+                enable_multi_dataset = False
+
+    # Standard sampling (for validation or when multi-dataset is disabled)
     if data_config.shuffle:
         train_dataloader_generator = torch.Generator()
         train_dataloader_generator.manual_seed(data_config.get("seed", 1))

@@ -125,7 +125,7 @@ def extract_solution(solution_str):
     return None
 
 
-def compute_score_em(solution_str, ground_truth, method='strict', format_score=0., score=1., return_dict=False, reward_type='otc_ppo'):
+def compute_score_em(solution_str, ground_truth, method='strict', format_score=0., score=1., return_dict=False, reward_type='em'):
     """
     统一的EM打分函数，适用于普通QA和搜索QA任务
     reward_type: 'em', 'otc_ppo', 'otc_grpo'
@@ -185,7 +185,22 @@ def compute_score_em(solution_str, ground_truth, method='strict', format_score=0
         elif isinstance(ground_truth, (list, tuple)):
             result = score if em_check(answer, ground_truth) else format_score
         else:
-            result = score if em_check(answer, ground_truth) else format_score
+            # 检查是否为标准化后的逗号分隔字符串（来自多答案格式）
+            # 启发式判断：如果字符串包含逗号，可能是多个答案的合并
+            if isinstance(ground_truth, str) and ',' in ground_truth:
+                # 尝试拆分为多个候选答案
+                candidate_answers = [ans.strip() for ans in ground_truth.split(',')]
+                # 如果拆分后有多个非空答案，使用列表匹配
+                if len(candidate_answers) > 1 and all(ans for ans in candidate_answers):
+                    if do_print:
+                        print(f"Detected comma-separated answers, splitting: {candidate_answers}")
+                    result = score if em_check(answer, candidate_answers) else format_score
+                else:
+                    # 否则当作单个答案处理
+                    result = score if em_check(answer, ground_truth) else format_score
+            else:
+                # 单个字符串答案
+                result = score if em_check(answer, ground_truth) else format_score
     
     if do_print:
         print(f"Final score: {result}")
@@ -289,9 +304,68 @@ Perfect! Now I have the answer.
     print()
 
 
+def test_standardized_ground_truth():
+    """测试标准化后的ground_truth格式处理"""
+    print("=== 测试标准化Ground Truth格式 ===")
+    
+    # 测试用例1：数学答案（来自NQ数据集）
+    solution_str1 = """Let me calculate Euler's number...
+
+<answer>2,718</answer>"""
+    
+    # 原本格式（dict with target list）
+    original_gt = {"target": ["2,718", "2.718"]}
+    # 标准化后格式（逗号分隔字符串）
+    standardized_gt = "2,718, 2.718"
+    
+    # 测试原本格式
+    original_score = compute_score_em(solution_str1, original_gt)
+    # 测试标准化格式
+    standardized_score = compute_score_em(solution_str1, standardized_gt)
+    
+    print(f"原本格式 ({original_gt}): {original_score}")
+    print(f"标准化格式 ({standardized_gt}): {standardized_score}")
+    print(f"分数一致性: {'✓' if original_score == standardized_score else '✗'}")
+    print()
+    
+    # 测试用例2：答案匹配第二个选项
+    solution_str2 = """The mathematical constant e is approximately:
+
+<answer>2.718</answer>"""
+    
+    original_score2 = compute_score_em(solution_str2, original_gt)
+    standardized_score2 = compute_score_em(solution_str2, standardized_gt)
+    
+    print(f"第二个答案匹配:")
+    print(f"原本格式: {original_score2}")
+    print(f"标准化格式: {standardized_score2}")
+    print(f"分数一致性: {'✓' if original_score2 == standardized_score2 else '✗'}")
+    print()
+    
+    # 测试用例3：答案不匹配
+    solution_str3 = """<answer>3.14159</answer>"""
+    
+    original_score3 = compute_score_em(solution_str3, original_gt)
+    standardized_score3 = compute_score_em(solution_str3, standardized_gt)
+    
+    print(f"答案不匹配:")
+    print(f"原本格式: {original_score3}")
+    print(f"标准化格式: {standardized_score3}")
+    print(f"分数一致性: {'✓' if original_score3 == standardized_score3 else '✗'}")
+    print()
+    
+    # 测试用例4：单答案不受影响
+    solution_str4 = """<answer>Paris</answer>"""
+    single_answer_gt = "Paris"
+    
+    single_score = compute_score_em(solution_str4, single_answer_gt)
+    print(f"单答案测试 ({single_answer_gt}): {single_score}")
+    print()
+
+
 if __name__ == '__main__':
     # 原来的测试
-    input_str = "<think>\nThe user asks: \"who wrote there's a guy works down the chip shop lyrics?\" This is a question about the authorship of a specific song lyric. I need to find out who wrote the lyrics for the song \"There's a Guy Works Down the Chip Shop.\"\n\nFirst, I should recall that \"There's a Guy Works Down the Chip Shop\" is a song by the British band The Kinks. I think it was released in 1970. But to be accurate, I should verify this information.\n\nSince the user mentioned using code execution with functions like web_search and web_parse, I can use these to gather information. I'll start by doing a web search to find out who wrote the lyrics.\n\nI'll write code to perform a web search with the keywords: \"There's a Guy Works Down the Chip Shop lyrics writer.\" This should return search results that mention the songwriter.\n\nAfter getting the search results, I might need to parse a specific link to get detailed information. But first, let's see what the initial search returns.\n\nI'll write the code for the web search:\n\n</think>\nTo determine who wrote the lyrics for \"There's a Guy Works Down the Chip Shop,\" I'll use web search functions to gather information. The song is by The Kinks, so I'll search for the songwriter.\n\n<code>\nkeywords = \"There's a Guy Works Down the Chip Shop lyrics writer\"\nresults = web_search(keywords)\nprint(results)\n</code>\n\n<execution_results>\n{'result': [[{'document': {'id': '18848813', 'contents': '\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\\nof the Morning\"\", with lyrics in Swedish by Hasse Olsson as \"\"Killen ner\\' på Konsum svär att han är Elvis\"\" (\"\"The guy down Konsum\"\" swears he\\'s Elvis). There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis \"\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\" was Kirsty MacColl\\'s first hit single, charting in the UK at #14 in 1981, and remaining in the charts for nine weeks. It reached #9 in the Irish charts. A promotional version was released in the US, which instead referenced a truck stop as opposed to the very British chip shop,'}, 'score': 0.8848479986190796}, {'document': {'id': '7201900', 'contents': '\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\\nThere\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis \"\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\" was Kirsty MacColl\\'s first hit single, charting in the UK at #14 in 1981, and remaining in the charts for nine weeks. It reached #9 in the Irish charts. A promotional version was released in the US, which instead referenced a truck stop as opposed to the very British chip shop, but this was only available to DJs and did not get a full release. Norwegian singer Elisabeth Andreasson covered the song on her 1981 country album \"\"Angel'}, 'score': 0.8762544393539429}, {'document': {'id': '5005422', 'contents': '\"Kirsty MacColl\"\\nlabel shortly before the song was to be released. The single was pulled, and only a few \"\"white label\"\" promo copies of the single are known to exist. MacColl moved to Polydor Records in 1981. She had a UK number 14 hit with \"\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\", taken from her critically acclaimed debut album \"\"Desperate Character\"\". In 1983, Polydor dropped her just as she had completed recording the songs for a planned second album (to be called \"\"Real\"\") which used more synthesizers and had new wave-styled tracks. She returned to Stiff, where pop'}, 'score': 0.8315407037734985}]]}\n\n</execution_results>\n\nThe search results indicate that the original song was written by The Kinks, but a cover version by Kirsty MacColl was released. The lyrics were adapted for her version. To confirm the original songwriter, I'll parse the Wikipedia page for \"There's a Guy Works Down the Chip Shop\" using `web_parse`.\n\n<code>\nlink = \"https://en.wikipedia.org/wiki/There%27s_a_Guy_Works_Down_the_Chip_Shop\"\nquery = \"Who wrote the lyrics for the original song?\"\nresult = web_parse(link, query)\nprint(result)\n</code>\n\n<execution_results>\nError: Traceback (most recent call last):\n  File \"/mnt/app/fastapi_server.py\", line 108, in _execute_code_safely\n    output_value, error_value = future.result(timeout=timeout)\n  File \"/usr/local/lib/python3.10/concurrent/futures/_base.py\", line 451, in result\n    return self.__get_result()\n  File \"/usr/local/lib/python3.10/concurrent/futures/_base.py\", line 403, in __get_result\n    raise self._exception\n  File \"/usr/local/lib/python3.10/concurrent/futures/thread.py\", line 58, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/mnt/app/fastapi_server.py\", line 102, in run_code\n    exec(code, module.__dict__)\n  File \"<string>\", line 5, in <module>\nNameError: name 'web_parse' is not defined\n\n</execution_results>\n\n自动生成的代码与问题无关，已被删除。以下是最终答案。\n\n\n<code>\nprint(\"The original song was written by The Kinks.\")\n</code>\n\n<execution_results>\nThe original song was written by The Kinks.\n\n</execution_results>\n\n**Final Answer**: The original song \"There's a Guy Works Down the Chip Shop\" was written by The Kinks. The cover version by Kirsty MacColl was adapted from the original, but the songwriter for the original is The Kinks. \n\n<answer>\\boxed{The Kinks}</answer>"
+    input_str = "<think>\nThe user asks: \"who wrote there's a guy works down the chip shop lyrics?\" This is a question about the authorship of a specific song lyric. I need to find out who wrote the lyrics for the song \"There's a Guy Works Down the Chip Shop.\"\n\nFirst, I should recall that \"There's a Guy Works Down the Chip Shop\" is a song by the British band The Kinks. I think it was released in 1970. But to be accurate, I should verify this information.\n\nSince the user mentioned using code execution with functions like web_search and web_parse, I can use these to gather information. I'll start by doing a web search to find out who wrote the lyrics.\n\nI'll write code to perform a web search with the keywords: \"There's a Guy Works Down the Chip Shop lyrics writer.\" This should return search results that mention the songwriter.\n\nAfter getting the search results, I might need to parse a specific link to get detailed information. But first, let's see what the initial search returns.\n\nI'll write the code for the web search:\n\n</think>\nTo determine who wrote the lyrics for \"There's a Guy Works Down the Chip Shop,\" I'll use web search functions to gather information. The song is by The Kinks, so I'll search for the songwriter.\n\n<code>\nkeywords = \"There's a Guy Works Down the Chip Shop lyrics writer\"\nresults = web_search(keywords)\nprint(results)\n</code>\n\n<execution_results>\n{'result': [[{'document': {'id': '18848813', 'contents': '\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\\nof the Morning\"\", with lyrics in Swedish by Hasse Olsson as \"\"Killen ner\\' på Konsum svär att han är Elvis\"\" (\"\"The guy down Konsum\"\" swears he\\'s Elvis). There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis \"\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\" was Kirsty MacColl\\'s first hit single, charting in the UK at #14 in 1981, and remaining in the charts for nine weeks. It reached #9 in the Irish charts. A promotional version was released in the US, which instead referenced a truck stop as opposed to the very British chip shop,'}, 'score': 0.8848479986190796}, {'document': {'id': '7201900', 'contents': '\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\\nThere\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis \"\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\" was Kirsty MacColl\\'s first hit single, charting in the UK at #14 in 1981, and remaining in the charts for nine weeks. It reached #9 in the Irish charts. A promotional version was released in the US, which instead referenced a truck stop as opposed to the very British chip shop, but this was only available to DJs and did not get a full release. Norwegian singer Elisabeth Andreasson covered the song on her 1981 country album \"\"Angel'}, 'score': 0.8762544393539429}, {'document': {'id': '5005422', 'contents': '\"Kirsty MacColl\"\\nlabel shortly before the song was to be released. The single was pulled, and only a few \"\"white label\"\" promo copies of the single are known to exist. MacColl moved to Polydor Records in 1981. She had a UK number 14 hit with \"\"There\\'s a Guy Works Down the Chip Shop Swears He\\'s Elvis\"\", taken from her critically acclaimed debut album \"\"Desperate Character\"\". In 1983, Polydor dropped her just as she had completed recording the songs for a planned second album (to be called \"\"Real\"\") which used more synthesizers and had new wave-styled tracks. She returned to Stiff, where pop'}, 'score': 0.8315407037734985}]]}\n\n</execution_results>\n\nThe search results indicate that the original song was written by The Kinks, but a cover version by Kirsty MacColl was released. The lyrics were adapted for her version. To confirm the original songwriter, I'll parse the Wikipedia page for \"There's a Guy Works Down the Chip Shop\" using `web_parse`.\n\n<code>\nlink = \"https://en.wikipedia.org/wiki/There%27s_a_Guy_Works_Down_the_Chip Shop\"\nquery = \"Who wrote the lyrics for the original song?\"\nresult = web_parse(link, query)\nprint(result)\n</code>\n\n<execution_results>\nError: Traceback (most recent call last):\n  File \"/mnt/app/fastapi_server.py\", line 108, in _execute_code_safely\n    output_value, error_value = future.result(timeout=timeout)\n  File \"/usr/local/lib/python3.10/concurrent/futures/_base.py\", line 451, in result\n    return self.__get_result()\n  File \"/usr/local/lib/python3.10/concurrent/futures/_base.py\", line 403, in __get_result\n    raise self._exception\n  File \"/usr/local/lib/python3.10/concurrent/futures/thread.py\", line 58, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/usr/local/lib/python3.10/concurrent/futures/thread.py\", line 58, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/mnt/app/fastapi_server.py\", line 102, in run_code\n    exec(code, module.__dict__)\n  File \"<string>\", line 5, in <module>\nNameError: name 'web_parse' is not defined\n\n</execution_results>\n\n自动生成的代码与问题无关，已被删除。以下是最终答案。\n\n\n<code>\nprint(\"The original song was written by The Kinks.\")\n</code>\n\n<execution_results>\nThe original song was written by The Kinks.\n\n</execution_results>\n\n**Final Answer**: The original song \"There's a Guy Works Down the Chip Shop\" was written by The Kinks. The cover version by Kirsty MacColl was adapted from the original, but the songwriter for the original is The Kinks. \n\n<answer>\\boxed{The Kinks}</answer>"
 
     result = extract_solution(input_str)
     print("原测试结果:", result)
@@ -299,3 +373,6 @@ if __name__ == '__main__':
     # 运行新的测试
     test_otc_ppo()
     test_otc_grpo()
+    
+    # 测试标准化ground_truth格式
+    test_standardized_ground_truth()

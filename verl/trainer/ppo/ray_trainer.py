@@ -267,7 +267,6 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
 
 @contextmanager
 def _timer(name: str, timing_raw: Dict[str, float]):
-    print(name)
     with Timer(name=name, logger=None) as timer:
         yield
     if name not in timing_raw:
@@ -338,6 +337,20 @@ class RayPPOTrainer:
 
         self._validate_config()
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+        
+        # Initialize batch ratio analyzer for multi-dataset training
+        self.batch_analyzer = None
+        multi_dataset_config = self.config.data.get("multi_dataset_sampling", {})
+        if multi_dataset_config.get("enable", False) and multi_dataset_config.get("log_batch_stats", True):
+            dataset_ratios = multi_dataset_config.get("dataset_ratios", {})
+            if dataset_ratios:
+                try:
+                    from verl.utils.dataset.multi_dataset_sampler import BatchRatioAnalyzer
+                    self.batch_analyzer = BatchRatioAnalyzer(target_ratios=dataset_ratios)
+                    self.batch_log_frequency = multi_dataset_config.get("log_frequency", 100)
+                    print(f"Initialized batch ratio analyzer with target ratios: {dataset_ratios}")
+                except ImportError:
+                    print("WARNING: Could not import BatchRatioAnalyzer, batch statistics disabled")
 
     def _validate_config(self):
         config = self.config
@@ -466,20 +479,46 @@ class RayPPOTrainer:
         self.train_dataset, self.val_dataset = train_dataset, val_dataset
 
         if train_sampler is None:
-            train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
+            train_sampler = create_rl_sampler(self.config.data, self.train_dataset, is_training=True)
         if collate_fn is None:
             from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
 
             collate_fn = default_collate_fn
 
-        self.train_dataloader = StatefulDataLoader(
-            dataset=self.train_dataset,
-            batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
-            num_workers=self.config.data.get("dataloader_num_workers", 8),
-            drop_last=True,
-            collate_fn=collate_fn,
-            sampler=train_sampler,
-        )
+        # 检查是否为BatchSampler（产生batch级别的索引）
+        if hasattr(train_sampler, '__iter__') and hasattr(train_sampler, '__len__'):
+            # 检查第一个产生的元素是否为列表（BatchSampler的特征）
+            first_element = next(iter(train_sampler))
+            if isinstance(first_element, list):
+                # 这是BatchSampler，使用batch_sampler参数
+                print("Detected BatchSampler, using batch_sampler parameter")
+                self.train_dataloader = StatefulDataLoader(
+                    dataset=self.train_dataset,
+                    num_workers=self.config.data.get("dataloader_num_workers", 8),
+                    collate_fn=collate_fn,
+                    batch_sampler=train_sampler,
+                )
+            else:
+                # 这是普通Sampler，使用sampler参数
+                print("Detected regular Sampler, using sampler parameter")
+                self.train_dataloader = StatefulDataLoader(
+                    dataset=self.train_dataset,
+                    batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
+                    num_workers=self.config.data.get("dataloader_num_workers", 8),
+                    drop_last=True,
+                    collate_fn=collate_fn,
+                    sampler=train_sampler,
+                )
+        else:
+            # 回退到原来的方式
+            self.train_dataloader = StatefulDataLoader(
+                dataset=self.train_dataset,
+                batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
+                num_workers=self.config.data.get("dataloader_num_workers", 8),
+                drop_last=True,
+                collate_fn=collate_fn,
+                sampler=train_sampler,
+            )
 
         val_batch_size = self.config.data.val_batch_size  # Prefer config value if set
         if val_batch_size is None:
@@ -915,6 +954,25 @@ class RayPPOTrainer:
                 timing_raw = {}
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
+                # Analyze batch ratio for multi-dataset training
+                if self.batch_analyzer is not None:
+                    batch_stats = self.batch_analyzer.analyze_batch(batch_dict)
+                    
+                    # Log batch statistics periodically
+                    if self.global_steps % self.batch_log_frequency == 0:
+                        print(f"\n[Step {self.global_steps}] Batch Ratio Analysis:")
+                        actual_ratios = batch_stats.get('actual_ratios', {})
+                        target_ratios = batch_stats.get('target_ratios', {})
+                        for source in target_ratios:
+                            actual = actual_ratios.get(source, 0.0)
+                            target = target_ratios[source]
+                            deviation = abs(actual - target)
+                            print(f"  {source}: Target {target:.3f}, Actual {actual:.3f}, Deviation {deviation:.4f}")
+                    
+                    # Add detailed summary every 500 steps  
+                    if self.global_steps % (self.batch_log_frequency * 5) == 0:
+                        self.batch_analyzer.print_analysis(recent_batches=self.batch_log_frequency * 5)
+
                 # pop those keys for generation
                 batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
                 non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -961,8 +1019,6 @@ class RayPPOTrainer:
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
-
-                    # breakpoint()
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
                     # balance the number of valid tokens on each dp rank.
@@ -1040,14 +1096,14 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
                         )
-                    
+
                     # update critic
                     if self.use_critic:
                         with _timer("update_critic", timing_raw):
                             critic_output = self.critic_wg.update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
-                    # breakpoint()
+
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor

@@ -1,4 +1,9 @@
 def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None):
+    # Extract question information if available
+    question = ""
+    if extra_info:
+        question = extra_info.get("question", extra_info.get("query", ""))
+    
     if data_source == "openai/gsm8k":
         from . import gsm8k
 
@@ -44,6 +49,32 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
     elif data_source in ["nq", "nq_search", "triviaqa", "popqa", "hotpotqa", "2wikimultihopqa", "musique", "bamboogle"]:
         from . import qa_em
         res = qa_em.compute_score_em(solution_str, ground_truth, return_dict=True)
+    elif data_source == "xhpang_search":
+        from . import xhpang_search_reward
+        # Enhanced xhpang_search with xverify and OTC support
+        res = xhpang_search_reward.compute_score(
+            solution_str, 
+            ground_truth, 
+            return_dict=True,
+            question=question,
+            extra_info=extra_info,
+            use_xverify=True,
+            use_otc=True,
+            otc_method="grpo"
+        )
+    elif data_source == "numina_math":
+        from . import numina_math_reward
+        # Enhanced numina_math with xverify and OTC support  
+        res = numina_math_reward.compute_score(
+            solution_str, 
+            ground_truth, 
+            return_dict=True,
+            question=question,
+            extra_info=extra_info,
+            use_xverify=True,
+            use_otc=True,
+            otc_method="grpo"
+        )
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 

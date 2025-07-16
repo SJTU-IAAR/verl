@@ -19,6 +19,14 @@ data:
   custom_cls:
       path: null
       name: null
+  # Multi-dataset ratio control (only applies to training, not validation)
+  multi_dataset_sampling:
+    enable: False  # Whether to enable multi-dataset ratio control
+    sampler_type: "weighted"  # Options: "weighted", "deterministic", "standard"
+    dataset_ratios: null  # Target ratios for each data source (dict, must sum to 1.0)
+    tolerance: 0.1  # Tolerance for ratio deviation warnings
+    log_batch_stats: True  # Whether to log batch statistics
+    log_frequency: 100  # Log statistics every N batches
 
 actor_rollout_ref:
   hybrid_engine: True

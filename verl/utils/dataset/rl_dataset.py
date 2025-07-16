@@ -107,6 +107,9 @@ class RLHFDataset(Dataset):
             # read parquet files and cache
             dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
             dataframes.append(dataframe)
+        
+        # Standardize schema before concatenation to handle different ground_truth formats
+        dataframes = self._standardize_schema(dataframes)
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
         print(f"dataset len: {len(self.dataframe)}")
@@ -123,6 +126,71 @@ class RLHFDataset(Dataset):
             )
 
             print(f"filter dataset len: {len(self.dataframe)}")
+
+    def _standardize_schema(self, dataframes):
+        """
+        Standardize the schema of different datasets to ensure compatibility.
+        
+        Specifically handles the ground_truth field in reward_model which can have different formats:
+        - Simple string: "answer"
+        - Complex nested: {"target": ["answer1", "answer2"]}
+        
+        This function converts all formats to simple strings.
+        """
+        import json
+        
+        def standardize_ground_truth(example):
+            """Convert complex ground_truth formats to simple strings"""
+            if 'reward_model' in example and 'ground_truth' in example['reward_model']:
+                ground_truth = example['reward_model']['ground_truth']
+                
+                # If ground_truth is already a string, keep it as is
+                if isinstance(ground_truth, str):
+                    return example
+                
+                # If ground_truth is a dict with 'target' key (NQ format)
+                if isinstance(ground_truth, dict) and 'target' in ground_truth:
+                    targets = ground_truth['target']
+                    # Convert list of targets to comma-separated string
+                    if isinstance(targets, list):
+                        example['reward_model']['ground_truth'] = ', '.join(str(t) for t in targets)
+                    else:
+                        example['reward_model']['ground_truth'] = str(targets)
+                # If ground_truth is some other complex structure, convert to JSON string
+                elif isinstance(ground_truth, (dict, list)):
+                    example['reward_model']['ground_truth'] = json.dumps(ground_truth)
+                # Otherwise convert to string
+                else:
+                    example['reward_model']['ground_truth'] = str(ground_truth)
+            
+            return example
+        
+        standardized_dataframes = []
+        for i, dataframe in enumerate(dataframes):
+            print(f"Standardizing schema for dataset {i+1}/{len(dataframes)}")
+            
+            # Check if this dataset needs schema standardization
+            sample = dataframe[0]
+            needs_standardization = False
+            
+            if 'reward_model' in sample and 'ground_truth' in sample['reward_model']:
+                ground_truth = sample['reward_model']['ground_truth']
+                if not isinstance(ground_truth, str):
+                    needs_standardization = True
+                    print(f"  Dataset {i+1} needs ground_truth standardization (type: {type(ground_truth)})")
+            
+            if needs_standardization:
+                # Apply standardization
+                standardized_dataframe = dataframe.map(
+                    standardize_ground_truth,
+                    desc=f"Standardizing ground_truth format for dataset {i+1}"
+                )
+                standardized_dataframes.append(standardized_dataframe)
+            else:
+                print(f"  Dataset {i+1} schema already compatible")
+                standardized_dataframes.append(dataframe)
+        
+        return standardized_dataframes
 
     def resume_dataset_state(self):
         self.serialize_dataset = not hasattr(self, "original_data_files")
