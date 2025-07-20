@@ -59,7 +59,7 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
             question=question,
             extra_info=extra_info,
             use_xverify=True,
-            use_otc=True,
+            use_otc=False,
             otc_method="grpo"
         )
     elif data_source == "numina_math":
@@ -72,7 +72,7 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
             question=question,
             extra_info=extra_info,
             use_xverify=True,
-            use_otc=True,
+            use_otc=False,
             otc_method="grpo"
         )
     else:

@@ -15,13 +15,13 @@
 """
 OTC (Optimal Tool Call) Reward Implementation
 
-This module implements the OTC reward mechanism from the paper, which aims to optimize
-tool usage efficiency by encouraging models to use the minimal but sufficient number
-of tool calls to solve problems.
+This module implements the OTC-GRPO reward mechanism from the paper:
+r_φ^tool(q,y) = α · r_tool · r_φ(q,y)
 
-Two implementations are provided:
-1. OTC-PPO: Simple version that penalizes tool usage directly
-2. OTC-GRPO: Group-based optimization that finds optimal tool call counts
+Where:
+- r_φ(q,y): Base reward function (accuracy)  
+- r_tool: Tool efficiency reward
+- α: Scale factor for tool reward integration
 """
 
 import re
@@ -63,36 +63,6 @@ def count_tool_calls(solution_str: str, tool_patterns: Optional[List[str]] = Non
     return total_calls
 
 
-def compute_otc_ppo_reward(m: int, c: float = 1.0) -> float:
-    """
-    Compute OTC-PPO reward based on tool call count.
-    
-    Formula: r_tool = cos(m * π / (2m + c))
-    
-    Args:
-        m: Number of tool calls in current trajectory
-        c: Smooth constant controlling reward decay rate
-           - Smaller c: faster punishment, encourages less tool use
-           - Larger c: more tolerant
-    
-    Returns:
-        Tool usage reward (0 to 1)
-    """
-    if m == 0:
-        return 1.0  # Perfect score for no tool usage
-    
-    # Compute the cosine reward
-    denominator = 2 * m + c
-    if denominator == 0:
-        return 0.0
-    
-    angle = m * math.pi / denominator
-    reward = math.cos(angle)
-    
-    # Ensure reward is in [0, 1] range
-    return max(0.0, reward)
-
-
 def compute_mapping_function(m: int, n: int) -> float:
     """
     Compute the mapping function f(m, n) for OTC-GRPO.
@@ -123,9 +93,9 @@ def compute_mapping_function(m: int, n: int) -> float:
         return 2.0 * n * m / denominator
 
 
-def compute_otc_grpo_reward(m: int, n: int, c: float = 1.0) -> float:
+def compute_tool_reward(m: int, n: int, c: float = 1.0) -> float:
     """
-    Compute OTC-GRPO reward based on current and optimal tool call counts.
+    Compute tool efficiency reward r_tool based on OTC-GRPO formula.
     
     Formula:
     r_tool = {
@@ -150,7 +120,17 @@ def compute_otc_grpo_reward(m: int, n: int, c: float = 1.0) -> float:
     
     # Case 2: n = 0 (optimal solution requires no tools but tools were used)
     elif n == 0:
-        return compute_otc_ppo_reward(m, c)
+        if m == 0:
+            return 1.0  # Perfect score for no tool usage
+        
+        # Compute the cosine reward
+        denominator = 2 * m + c
+        if denominator == 0:
+            return 0.0
+        
+        angle = m * math.pi / denominator
+        reward = math.cos(angle)
+        return max(0.0, reward)
     
     # Case 3: General case (optimal solution requires tools)
     else:
@@ -191,28 +171,27 @@ def find_optimal_tool_calls(correct_trajectories: List[str],
 
 def compute_otc_reward(solution_str: str, 
                       ground_truth: Any,
-                      method: str = "ppo",
+                      method: str = "grpo",
                       base_reward_fn: Optional[callable] = None,
                       correct_trajectories: Optional[List[str]] = None,
                       tool_patterns: Optional[List[str]] = None,
                       c: float = 1.0,
-                      alpha: float = 0.7,
-                      beta: float = 0.3,
+                      alpha: float = 1.0,
                       return_dict: bool = False) -> Union[float, Dict[str, Any]]:
     """
-    Compute OTC (Optimal Tool Call) reward combining base reward with tool efficiency.
+    Compute OTC reward using the standard paper formula:
+    r_φ^tool(q,y) = α · r_tool · r_φ(q,y)
     
     Args:
         solution_str: The solution text to evaluate
         ground_truth: Ground truth for base reward calculation
-        method: "ppo" for OTC-PPO or "grpo" for OTC-GRPO
-        base_reward_fn: Function to compute base reward (e.g., accuracy)
+        method: "ppo" or "grpo" (for GRPO, need correct_trajectories)
+        base_reward_fn: Function to compute base reward r_φ(q,y)
                        If None, assumes the answer is correct (reward=1.0)
         correct_trajectories: List of correct solution strings (needed for GRPO)
         tool_patterns: Patterns to match tool calls
         c: Smooth constant for cosine reward
-        alpha: Weight for base reward (default: 0.7)
-        beta: Weight for tool efficiency reward (default: 0.3)
+        alpha: Scale factor α for tool reward integration
         return_dict: Whether to return detailed information
         
     Returns:
@@ -224,7 +203,7 @@ def compute_otc_reward(solution_str: str,
     # Count tool calls in current solution
     m = count_tool_calls(solution_str, tool_patterns)
     
-    # Compute base reward (accuracy)
+    # Compute base reward r_φ(q,y)
     if base_reward_fn is not None:
         base_reward = base_reward_fn(solution_str, ground_truth)
         if isinstance(base_reward, dict):
@@ -235,38 +214,30 @@ def compute_otc_reward(solution_str: str,
         # Assume correct answer if no base reward function provided
         base_score = 1.0
     
-    # Compute tool efficiency reward
-    if method.lower() == "ppo":
-        tool_reward = compute_otc_ppo_reward(m, c)
-        n = None  # Not used in PPO method
-    elif method.lower() == "grpo":
-        if correct_trajectories is None:
-            # Fallback to PPO method if no group information available
-            tool_reward = compute_otc_ppo_reward(m, c)
-            n = None
-        else:
-            n = find_optimal_tool_calls(correct_trajectories, tool_patterns)
-            tool_reward = compute_otc_grpo_reward(m, n, c)
+    # Estimate optimal tool calls n
+    if method.lower() == "grpo" and correct_trajectories is not None:
+        n = find_optimal_tool_calls(correct_trajectories, tool_patterns)
     else:
-        raise ValueError(f"Unknown OTC method: {method}. Use 'ppo' or 'grpo'.")
+        # For PPO or when no group information available, assume n=0 (no tools needed)
+        n = 0
     
-    # Combine rewards
-    final_reward = alpha * base_score + beta * tool_reward
+    # Compute tool efficiency reward r_tool
+    tool_reward = compute_tool_reward(m, n, c)
+    
+    # Apply paper formula: r_φ^tool(q,y) = α · r_tool · r_φ(q,y)
+    final_reward = alpha * tool_reward * base_score
     
     if do_print:
         print(f"======== OTC REWARD CALCULATION DEBUG (10% sample) ========")
         print(f"Method: {method.upper()}")
         print(f"Tool calls found (m): {m}")
-        if n is not None:
-            print(f"Optimal tool calls (n): {n}")
-        print(f"Base reward: {base_score:.4f}")
-        print(f"Tool efficiency reward: {tool_reward:.4f}")
-        print(f"Alpha (base weight): {alpha}, Beta (tool weight): {beta}")
-        print(f"Final combined reward: {final_reward:.4f}")
+        print(f"Optimal tool calls (n): {n}")
+        print(f"Base reward r_φ(q,y): {base_score:.4f}")
+        print(f"Tool reward r_tool: {tool_reward:.4f}")
+        print(f"Scale factor α: {alpha}")
+        print(f"Final reward: α * r_tool * r_φ = {alpha} * {tool_reward:.4f} * {base_score:.4f} = {final_reward:.4f}")
         print(f"Ground truth: {ground_truth}")
-        print(f"Solution string (first 300 chars): {solution_str[:300]}...")
-        if len(solution_str) > 300:
-            print(f"Solution string (last 100 chars): ...{solution_str[-100:]}")
+        print(f"Solution preview: {solution_str[:300]}...")
         print(f"============================================================")
     
     if return_dict:
@@ -275,37 +246,22 @@ def compute_otc_reward(solution_str: str,
             "base_score": base_score,
             "tool_reward": tool_reward,
             "tool_calls": m,
+            "optimal_tool_calls": n,
             "method": method,
-            "alpha": alpha,
-            "beta": beta
+            "alpha": alpha
         }
-        if n is not None:
-            result["optimal_tool_calls"] = n
         return result
     
     return final_reward
 
 
+# Convenience functions for backward compatibility
 def compute_score_otc_ppo(solution_str: str, 
                          ground_truth: Any,
                          base_reward_fn: Optional[callable] = None,
                          c: float = 1.0,
-                         alpha: float = 0.7,
-                         beta: float = 0.3) -> Dict[str, Any]:
-    """
-    Convenience function for OTC-PPO reward calculation.
-    
-    Args:
-        solution_str: Solution text
-        ground_truth: Ground truth
-        base_reward_fn: Base reward function
-        c: Smooth constant
-        alpha: Base reward weight
-        beta: Tool reward weight
-        
-    Returns:
-        Dictionary with detailed reward information
-    """
+                         alpha: float = 1.0) -> Dict[str, Any]:
+    """Convenience function for OTC-PPO reward calculation."""
     return compute_otc_reward(
         solution_str=solution_str,
         ground_truth=ground_truth,
@@ -313,7 +269,6 @@ def compute_score_otc_ppo(solution_str: str,
         base_reward_fn=base_reward_fn,
         c=c,
         alpha=alpha,
-        beta=beta,
         return_dict=True
     )
 
@@ -323,23 +278,8 @@ def compute_score_otc_grpo(solution_str: str,
                           correct_trajectories: List[str],
                           base_reward_fn: Optional[callable] = None,
                           c: float = 1.0,
-                          alpha: float = 0.7,
-                          beta: float = 0.3) -> Dict[str, Any]:
-    """
-    Convenience function for OTC-GRPO reward calculation.
-    
-    Args:
-        solution_str: Solution text
-        ground_truth: Ground truth
-        correct_trajectories: List of correct solution strings
-        base_reward_fn: Base reward function
-        c: Smooth constant
-        alpha: Base reward weight
-        beta: Tool reward weight
-        
-    Returns:
-        Dictionary with detailed reward information
-    """
+                          alpha: float = 1.0) -> Dict[str, Any]:
+    """Convenience function for OTC-GRPO reward calculation."""
     return compute_otc_reward(
         solution_str=solution_str,
         ground_truth=ground_truth,
@@ -348,14 +288,15 @@ def compute_score_otc_grpo(solution_str: str,
         correct_trajectories=correct_trajectories,
         c=c,
         alpha=alpha,
-        beta=beta,
         return_dict=True
     )
 
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Test tool call counting
+    print("=== Testing Clean OTC Reward Function ===")
+    
+    # Test solution with tools
     test_solution = """
     I need to search for information first.
     <search>What is the capital of France?</search>
@@ -369,22 +310,33 @@ if __name__ == "__main__":
     The answer is Paris.
     """
     
-    tool_count = count_tool_calls(test_solution)
-    print(f"Tool calls found: {tool_count}")
+    # Test cases
+    def correct_answer_fn(sol_str, gt):
+        return 1.0  # Correct answer
     
-    # Test OTC-PPO
-    ppo_reward = compute_otc_ppo_reward(tool_count, c=1.0)
-    print(f"OTC-PPO reward: {ppo_reward:.4f}")
+    def wrong_answer_fn(sol_str, gt):
+        return 0.0  # Wrong answer
     
-    # Test OTC-GRPO
-    grpo_reward = compute_otc_grpo_reward(tool_count, n=1, c=1.0)
-    print(f"OTC-GRPO reward: {grpo_reward:.4f}")
-    
-    # Test full OTC reward
-    result = compute_otc_reward(
+    # Test correct answer with tools
+    result_correct = compute_otc_reward(
         solution_str=test_solution,
         ground_truth="Paris",
-        method="ppo",
+        method="grpo",
+        base_reward_fn=correct_answer_fn,
+        correct_trajectories=["<search>capital France</search>\nParis"],  # Optimal uses 1 tool
         return_dict=True
     )
-    print(f"Full OTC result: {result}") 
+    print(f"Correct answer with tools: {result_correct}")
+    
+    # Test wrong answer with tools (should be 0)
+    result_wrong = compute_otc_reward(
+        solution_str=test_solution,
+        ground_truth="Paris",
+        method="grpo", 
+        base_reward_fn=wrong_answer_fn,
+        correct_trajectories=["<search>capital France</search>\nParis"],
+        return_dict=True
+    )
+    print(f"Wrong answer with tools: {result_wrong}")
+    
+    print("=== Clean OTC Tests Complete ===") 

@@ -268,8 +268,7 @@ def compute_score(solution_str: str,
                  otc_method: str = "grpo",
                  correct_trajectories: Optional[List[str]] = None,
                  xverify_config: Optional[Dict[str, Any]] = None,
-                 otc_alpha: float = 0.7,
-                 otc_beta: float = 0.3,
+                 otc_alpha: float = 1.0,
                  otc_c: float = 1.0) -> Union[float, Dict[str, Any]]:
     """
     Enhanced Numina Math dataset reward function with xverify and OTC GRPO support.
@@ -292,8 +291,7 @@ def compute_score(solution_str: str,
         otc_method: OTC method ("ppo" or "grpo").
         correct_trajectories: List of correct trajectories for OTC-GRPO.
         xverify_config: Configuration for xverify model.
-        otc_alpha: Weight for base reward in OTC.
-        otc_beta: Weight for tool efficiency in OTC.
+        otc_alpha: Scale factor α for OTC tool reward integration.
         otc_c: Smooth constant for OTC reward.
         
     Returns:
@@ -356,7 +354,6 @@ def compute_score(solution_str: str,
                 correct_trajectories=correct_trajectories,
                 c=otc_c,
                 alpha=otc_alpha,
-                beta=otc_beta,
                 return_dict=True
             )
             final_score = otc_result["score"]
