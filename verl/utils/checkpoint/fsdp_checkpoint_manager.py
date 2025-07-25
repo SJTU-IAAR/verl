@@ -224,6 +224,15 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 "optimizer must be provided when checkpoint_contents.save includes ['optimizer']"
             )
 
+        # Add rank-based delay to reduce GPFS concurrent write pressure
+        # This helps prevent "PytorchStreamWriter failed writing file data" errors
+        import time
+        delay = self.rank * 0.5  # Each rank waits 0.5 seconds * rank_id
+        if delay > 0:
+            log_with_rank(f"Rank {self.rank} waiting {delay}s before saving to reduce concurrent I/O pressure", 
+                         rank=self.rank, logger=logger)
+            time.sleep(delay)
+
         # every rank will save its own model and optim shard
         state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
         optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)

@@ -34,6 +34,16 @@ defaults:
   # self config override anything above
   - _self_
 
+# Agent loop configuration
+agent_loops:
+  # Default agent loops available for mixed dataset training
+  code_execution_agent:
+    _target_: verl.experimental.agent_loop.CodeExecutionAgentLoop
+  tool_agent:
+    _target_: verl.experimental.agent_loop.ToolAgentLoop
+  single_turn_agent:
+    _target_: verl.experimental.agent_loop.SingleTurnAgentLoop
+
 # config for actor, rollout and reference model
 actor_rollout_ref:
 

@@ -15,7 +15,16 @@
 from .agent_loop import AgentLoopBase, AgentLoopManager
 from .single_turn_agent_loop import SingleTurnAgentLoop
 from .tool_agent_loop import ToolAgentLoop
+from .code_execution_agent_loop import CodeExecutionAgentLoop
+from .global_rate_limiter import GlobalRateLimiter, get_global_rate_limiter
+from .mixed_dataset_sampler import AgentLoopBatchSampler, create_mixed_agent_loop_sampler, BatchRatioAnalyzer
+from .efficient_mixed_sampler import VERLMixedBatchSampler, create_verl_mixed_sampler, PerformanceMonitor
 
-_ = [SingleTurnAgentLoop, ToolAgentLoop]
+_ = [SingleTurnAgentLoop, ToolAgentLoop, CodeExecutionAgentLoop]
 
-__all__ = ["AgentLoopBase", "AgentLoopManager"]
+__all__ = [
+    "AgentLoopBase", "AgentLoopManager", 
+    "GlobalRateLimiter", "get_global_rate_limiter",
+    "AgentLoopBatchSampler", "create_mixed_agent_loop_sampler", "BatchRatioAnalyzer",
+    "VERLMixedBatchSampler", "create_verl_mixed_sampler", "PerformanceMonitor"
+]

@@ -1,0 +1,93 @@
+# Mixed Dataset GRPO Training Configuration
+# This file contains stable configuration that rarely changes
+
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+# Data configuration (stable settings)
+data:
+  return_raw_chat: True
+  shuffle: true
+  seed: 1
+  filter_overlong_prompts: True
+  truncation: 'error'
+  
+  # Mixed dataset configuration
+  mixed_dataset:
+    enabled: true
+    # Performance settings
+    precompute_batches: true
+    monitor_performance: true
+    sampler_type: "efficient"
+
+# Actor-rollout configuration (stable settings)
+actor_rollout_ref:
+  hybrid_engine: True
+  
+  # Model configuration
+  model:
+    use_remove_padding: True
+    enable_gradient_checkpointing: True
+  
+  # Actor configuration
+  actor:
+    use_kl_loss: True
+    kl_loss_type: low_var_kl
+    entropy_coeff: 0
+    fsdp_config:
+      param_offload: False
+      optimizer_offload: False
+  
+  # Rollout configuration
+  rollout:
+    name: vllm  # Can be overridden in bash
+    mode: async
+    
+    # Multi-turn configuration
+    multi_turn:
+      enable: True
+      format: hermes
+      
+      # Tool configuration with enhanced features
+      tool_config:
+        # Rate limiting configuration
+        enable_global_rate_limit: true
+        
+        # Configurable special tokens (can be overridden)
+        code_start_tag: "<code>"
+        code_end_tag: "</code>"
+        answer_start_tag: "<answer>"
+        answer_end_tag: "</answer>"
+        
+        # State masking configuration
+        state_masking: true
+        start_state_marker: "<execution_results>"
+        end_state_marker: "</execution_results>"
+  
+  # Reference model configuration
+  ref:
+    fsdp_config:
+      param_offload: True
+
+# Algorithm configuration (stable)
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: False
+
+# Trainer configuration (stable settings)
+trainer:
+  critic_warmup: 0
+  logger: ["console", "tensorboard", "wandb"]
+  val_before_train: False
+
+# Agent loop configuration
+agent_loops:
+  code_execution_agent:
+    _target_: verl.experimental.agent_loop.CodeExecutionAgentLoop
+  tool_agent:
+    _target_: verl.experimental.agent_loop.ToolAgentLoop 

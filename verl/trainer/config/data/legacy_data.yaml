@@ -48,6 +48,9 @@ return_full_prompt: False
 # Whether to shuffle the data in the dataloader.
 shuffle: True
 
+# Random seed for reproducibility
+seed: 1
+
 # num dataloader workers
 dataloader_num_workers: 8
 
@@ -107,3 +110,16 @@ datagen:
   # The class name of the data generation class within the specified file.
   # E.g. 'MockDataGenerator'
   name: null
+
+# Mixed dataset sampling configuration
+mixed_dataset:
+  enabled: false  # Whether to enable mixed dataset ratio control
+  sampler_type: "efficient"  # Options: "efficient", "standard", "weighted"
+  dataset_ratios: {}  # Target ratios for each data source (dict, must sum to 1.0)
+  agent_mapping: {}   # Agent type mapping for each data source (dict)
+  # Performance settings
+  precompute_batches: true  # Pre-compute batch schedules for better performance
+  monitor_performance: true  # Whether to monitor batch composition
+  tolerance: 0.05  # Tolerance for ratio deviation warnings
+  log_batch_stats: true  # Whether to log batch statistics
+  log_frequency: 50  # Log statistics every N batches

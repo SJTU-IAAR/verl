@@ -14,6 +14,33 @@
 # from . import gsm8k, math, prime_math, prime_code
 
 from verl.utils.import_utils import deprecated
+import os
+
+# Global reward logger instance - lazy initialization
+_reward_logger = None
+
+def _get_reward_logger():
+    """Get or create the global reward logger instance."""
+    global _reward_logger
+    
+    # Check if logging is enabled
+    if not os.getenv("VERL_REWARD_LOGGING", "false").lower() in ("true", "1", "yes", "on"):
+        return None
+    
+    # Initialize logger once
+    if _reward_logger is None:
+        try:
+            from verl.utils.logger.reward_logger import RewardLogger
+            _reward_logger = RewardLogger(
+                log_dir=os.getenv("VERL_REWARD_LOG_DIR", "./reward_logs"),
+                prefix="reward_samples",
+                log_percentage=float(os.getenv("VERL_REWARD_LOG_PERCENTAGE", "0.1")),
+                verbose=os.getenv("VERL_REWARD_LOG_VERBOSE", "false").lower() in ("true", "1", "yes", "on")
+            )
+        except Exception:
+            _reward_logger = None  # Disable logging on error
+    
+    return _reward_logger
 
 
 def default_compute_score(
@@ -45,9 +72,9 @@ def default_compute_score(
 
         res = gsm8k.compute_score(solution_str, ground_truth)
     elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval"]:
-        from . import math
+        from . import math_utils
 
-        res = math.compute_score(solution_str, ground_truth)
+        res = math_utils.compute_score(solution_str, ground_truth)
         # [Optional] Math-Verify Integration
         # For enhanced accuracy, consider utilizing Math-Verify (https://github.com/huggingface/Math-Verify).
         # Note: Math-Verify needs to be manually installed via pip: `pip install math-verify`.
@@ -89,6 +116,22 @@ def default_compute_score(
         from . import geo3k
 
         res = geo3k.compute_score(solution_str, ground_truth)
+    elif data_source in ["xhpang_search"]:
+        from . import xhpang_search_reward
+
+        # Extract question from extra_info for enhanced evaluation
+        question = ""
+        if extra_info:
+            question = extra_info.get("question", "")
+        res = xhpang_search_reward.compute_score(solution_str, ground_truth, question=question, extra_info=extra_info, return_dict=True)
+    elif data_source in ["numina_math"]:
+        from . import numina_math_reward
+
+        # Extract question from extra_info for enhanced evaluation
+        question = ""
+        if extra_info:
+            question = extra_info.get("question", "")
+        res = numina_math_reward.compute_score(solution_str, ground_truth, question=question, extra_info=extra_info, return_dict=True)
     elif data_source in [
         "searchR1_nq",
         "searchR1_triviaqa",
@@ -105,6 +148,30 @@ def default_compute_score(
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 
+    # Log the sample and return result
+    logger = _get_reward_logger()
+    if logger is not None:
+        try:
+            # Extract score
+            score = res.get("score", 0.0) if isinstance(res, dict) else (float(res) if isinstance(res, (int, float, bool)) else float(res[0]))
+            
+            # Extract prompt from extra_info
+            prompt = ""
+            if extra_info:
+                prompt = extra_info.get("question", extra_info.get("prompt", ""))
+            
+            logger.log_sample(
+                prompt=prompt or "Prompt not available",
+                response=solution_str,
+                ground_truth=ground_truth,
+                data_source=data_source,
+                score=score,
+                extra_info={"result_details": res} if isinstance(res, dict) else None
+            )
+        except Exception:
+            pass  # Don't let logging errors affect training
+
+    # Return original result format
     if isinstance(res, dict):
         return res
     elif isinstance(res, int | float | bool):

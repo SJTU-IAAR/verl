@@ -1,0 +1,112 @@
+# Example configuration for CodeExecutionAgentLoop
+# This demonstrates how to use the enhanced agent loop with global rate limiting
+# and mixed data source support
+
+# Model and training configuration
+model_path: "/path/to/your/model"
+trainer:
+  actor_rollout_ref:
+    rollout:
+      # Basic rollout parameters
+      prompt_length: 2048
+      response_length: 1024
+      temperature: 0.7
+      top_p: 0.9
+      
+      # Multi-turn configuration
+      multi_turn:
+        max_user_turns: 3
+        max_assistant_turns: 5
+        max_parallel_calls: 4
+        
+        # Tool client configuration with your custom ToolClient features
+        tool_config:
+          # Server configuration
+          server_url: "http://127.0.0.1:30003"
+          max_retries: 3
+          timeout: 60.0
+          max_workers: 10
+          
+          # Rate limiting configuration
+          rate_limit_per_minute: 120.0
+          enable_global_rate_limit: true  # NEW: Cross-process rate limiting
+          
+          # Configurable special tokens and markers  
+          code_start_tag: "<code>"          # NEW: Configurable code detection
+          code_end_tag: "</code>"
+          answer_start_tag: "<answer>"      # NEW: Configurable answer detection
+          answer_end_tag: "</answer>"
+          
+          # State masking configuration
+          state_masking: true
+          start_state_marker: "<execution_results>"  # NEW: Configurable masking markers
+          end_state_marker: "</execution_results>"
+
+# Agent loop configuration
+agent_loops:
+  # Use the new CodeExecutionAgentLoop
+  code_execution_agent:
+    _target_: verl.experimental.agent_loop.CodeExecutionAgentLoop
+    
+  # You can also configure the standard ToolAgentLoop
+  tool_agent:
+    _target_: verl.experimental.agent_loop.ToolAgentLoop
+    tool_config_path: "/path/to/tools.json"
+
+# Example usage in dataset configuration
+data:
+  train_batch_size: 32
+  gen_batch_size: 32
+  shuffle: true
+  seed: 1
+  
+  # NEW: Mixed data source configuration
+  mixed_dataset:
+    enabled: true
+    # Data source ratios (must sum to 1.0)
+    dataset_ratios:
+      taco: 0.4      # 40% TACO (code execution tasks)
+      nq: 0.3        # 30% Natural Questions (search tasks)
+      math: 0.3      # 30% Math problems (code execution)
+    
+    # Agent mapping for each data source
+    agent_mapping:
+      taco: "code_execution_agent"
+      nq: "tool_agent"
+      math: "code_execution_agent"
+    
+    # Performance settings
+    precompute_batches: true          # Pre-compute batch schedule for speed
+    monitor_performance: true         # Enable batch ratio monitoring
+    
+    # Sampler type: "efficient" (recommended) or "standard"
+    sampler_type: "efficient"
+
+# Example validation configuration
+validation:
+  # Different configuration for validation to be more conservative
+  actor_rollout_ref:
+    rollout:
+      multi_turn:
+        max_user_turns: 2  # Fewer turns during validation
+        max_assistant_turns: 3
+        tool_config:
+          rate_limit_per_minute: 60.0  # Lower rate limit for validation
+          max_workers: 5
+
+# Global rate limiter configuration (optional advanced settings)
+global_rate_limiter:
+  # Custom lock file location (optional)
+  lock_file: "/tmp/verl_rate_limiter.lock"
+  
+  # Cleanup settings
+  auto_cleanup: true
+  cleanup_on_exit: true
+
+# Example logging configuration for debugging
+logging:
+  level: INFO
+  loggers:
+    "verl.experimental.agent_loop.global_rate_limiter": DEBUG
+    "verl.experimental.agent_loop.tool_client": DEBUG
+    "verl.experimental.agent_loop.code_execution_agent_loop": DEBUG 

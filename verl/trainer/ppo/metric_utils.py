@@ -392,7 +392,8 @@ def process_validation_metrics(
     for data_source, prompt2var2vals in data_src2prompt2var2vals.items():
         for prompt, var2vals in prompt2var2vals.items():
             for var_name, var_vals in var2vals.items():
-                if isinstance(var_vals[0], str):
+                # Skip non-numeric types (strings, dicts, lists, etc.)
+                if isinstance(var_vals[0], (str, dict, list)):
                     continue
 
                 metric = {}

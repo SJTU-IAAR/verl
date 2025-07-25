@@ -79,6 +79,26 @@ class NaiveRewardManager:
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             extra_info["num_turns"] = num_turns
+            
+            # Extract question from the original data structure
+            # Priority: 1) existing question in extra_info, 2) question field from data, 3) last user message, 4) decoded prompt
+            if "question" not in extra_info or not extra_info["question"]:
+                # Try to get question from the original data
+                if "question" in data_item.non_tensor_batch:
+                    extra_info["question"] = data_item.non_tensor_batch["question"]
+                else:
+                    # Try to extract from prompt structure (if it's a list of messages)
+                    raw_prompt = data_item.non_tensor_batch.get("raw_prompt", [])
+                    if isinstance(raw_prompt, list) and len(raw_prompt) > 0:
+                        # Find the last user message
+                        for msg in reversed(raw_prompt):
+                            if isinstance(msg, dict) and msg.get("role") == "user":
+                                extra_info["question"] = msg.get("content", "")
+                                break
+                    
+                    # Fallback to decoded prompt if no other source found
+                    if "question" not in extra_info or not extra_info["question"]:
+                        extra_info["question"] = prompt_str
 
             score = self.compute_score(
                 data_source=data_source,
